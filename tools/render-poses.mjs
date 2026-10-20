@@ -87,7 +87,7 @@ async function main() {
         const av = await avatar();
         av.setParameters({ ...defaults, ...values });
         if (expression) av.setExpression(expression);
-        av.advance(0, 60);
+        av.advance(1, 60);
         pictures.push([name, canvas.toDataURL()]); av.destroy();
       }
       const av = await avatar();
