@@ -42,7 +42,14 @@ export function createPhysics(engine, rig) {
   class Physics {
     constructor() {
       this.gain = 1;          // "sway gain"
-      this.out = { gain: 1, bunL: [0, 0], bunR: [0, 0] };
+      this.softBodyGain = 1;
+      this.out = { gain: 1, bunL: [0, 0], bunR: [0, 0], softBody: [0, 0] };
+      this.softBody = rig.softBody ? {
+        offset: [0, 0],
+        velocity: [0, 0],
+        previousTarget: null,
+        previousVelocity: [0, 0],
+      } : null;
       this.hair = {};
       for (const k of Object.keys(HAIR)) {
         this.hair[k] = { p: null, v: [0, 0] };
@@ -58,6 +65,23 @@ export function createPhysics(engine, rig) {
       this.time = 0;
     }
 
+    triggerSoftBodyBounce(strength = 1) {
+      if (!this.softBody || this.softBodyGain === 0) return;
+      const amount = Math.max(0, Math.min(1, Number(strength) || 0));
+      const cfg = rig.softBody;
+      const omega = 2 * Math.PI * cfg.frequency;
+      this.softBody.velocity[1] -= amount * cfg.maxOffset * omega;
+    }
+
+    setSoftBodyGain(gain) {
+      this.softBodyGain = Math.max(0, Math.min(1, Number(gain) || 0));
+      if (this.softBodyGain === 0 && this.softBody) {
+        this.softBody.offset = [0, 0];
+        this.softBody.velocity = [0, 0];
+        this.out.softBody = [0, 0];
+      }
+    }
+
     hairAnchor(at, P) {
       const p = [at[0], at[1]];
       applyHead(p, 1, P);
@@ -70,6 +94,44 @@ export function createPhysics(engine, rig) {
       const h = Math.min(dt, 0.05) / sub;
       const roll = -P.angleZ / 30 * rig.head.maxRoll - P.bodyAngleZ / 10 * rig.body.maxRoll;
       const g = this.gain;
+
+      if (this.softBody && dt > 0) {
+        const cfg = rig.softBody;
+        const state = this.softBody;
+        const target = [rig.body.chest.cx, rig.body.chest.cy];
+        applyHead(target, 1, P);
+        applyBody(target, target[1], P, 0, 0, 0);
+        if (state.previousTarget === null) {
+          state.previousTarget = [...target];
+        } else {
+          const velocity = target.map((value, axis) => (value - state.previousTarget[axis]) / dt);
+          const acceleration = velocity.map((value, axis) =>
+            (value - state.previousVelocity[axis]) / dt,
+          );
+          state.previousTarget = [...target];
+          state.previousVelocity = velocity;
+
+          const gain = cfg.gain * this.softBodyGain;
+          const omega = 2 * Math.PI * cfg.frequency;
+          const drive = softLimit(
+            acceleration.map(value => -value * gain),
+            cfg.maxOffset * omega * omega * gain,
+          );
+          const substeps = Math.max(1, Math.ceil(dt / (1 / 240)));
+          const h = Math.min(dt, 0.05) / substeps;
+          for (let i = 0; i < substeps; i++) {
+            for (let axis = 0; axis < 2; axis++) {
+              const force = drive[axis]
+                - omega * omega * state.offset[axis]
+                - 2 * cfg.damping * omega * state.velocity[axis];
+              state.velocity[axis] += force * h;
+              state.offset[axis] += state.velocity[axis] * h;
+            }
+          }
+          state.offset = softLimit(state.offset, cfg.maxOffset);
+        }
+        this.out.softBody = [...state.offset];
+      }
 
       STRANDS.forEach((cfg, si) => {
         const st = this.strands[si], out = this.out.strands[si];

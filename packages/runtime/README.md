@@ -69,6 +69,11 @@ avatar.setExpression('smile');
 // Apply tracked or posed parameters. Each call replaces the supplied overrides.
 avatar.setParameters({ angleX: 10, gazeX: 0.25 }, 1);
 
+// Movement automatically drives configured soft-body regions; call on a jump/landing
+// for an explicit bounce impulse. Set the gain to zero to disable it.
+avatar.triggerSoftBodyBounce(0.8);
+avatar.setSoftBodyGain(0.5);
+
 // When the line finishes, return to idle and clear overrides.
 avatar.setVoiceLevel(0);
 avatar.setSpeaking(false);
@@ -81,6 +86,10 @@ avatar.destroy();
 ```
 
 Emotion tags are `happy`, `sad`, `angry`, `surprised`, `relaxed` and `neutral` (or `null` to reset). Expressions are `neutral`, `smile`, `shy`, `surprise`, `halfLidded`, `angry`, `sad` and `wink`; `LIVE_EXPRESSIONS` exports that list. `PARAMS` exports the parameter IDs, ranges and defaults. Voice methods animate the avatar; your app handles audio playback.
+Soft-body motion is opt-in through `rig.softBody`: movement acceleration drives a damped,
+bounded spring with no idle oscillation. Auto-rig drafts include estimated influence regions;
+review them before enabling the effect. `triggerSoftBodyBounce(strength)` accepts `0..1`,
+and `setSoftBodyGain(0)` disables the effect for an avatar instance.
 
 `loadMeshAvatar` releases archives it opens on `destroy()` or load failure; when passed an existing `AvatarPackage` from `openAvatar`, the caller owns it and must call `release()` after its last user is destroyed.
 

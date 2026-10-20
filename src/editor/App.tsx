@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import fixture from 'virtual:sample-rig';
 import { EditorCanvas } from './EditorCanvas';
-import { setAt } from './model';
-import { type Rig, parseRig, validateRig } from 'mesh-avatar';
+import { drawRigPart, setAt, type DrawTool } from './model';
+import { type Point, type Rig, parseRig, validateRig } from 'mesh-avatar';
 import { Preview } from './Preview';
 import { RigHistory, downloadRig } from './history';
 import { openProjectFolder, openLocalProject, copySample, localProjects, projectAction, sampleImagesAvailable, sampleSourceUrl, repositoryContext, runProjectJob, ProjectJobError, importAvatar, exportAvatar, type ProjectJob, type LocalProject, type LocalProjectEntry } from './project';
@@ -46,6 +46,7 @@ function Workspace() {
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const projectOpened = useRef(false);
+  const requestedProjectOpened = useRef(false);
   const objectUrls = useRef<string[]>([]);
   const [sourceUrl, setSourceUrl] = useState('');
   const [assets, setAssets] = useState<Record<string, string> | undefined>(undefined);
@@ -80,6 +81,17 @@ function Workspace() {
     void localProjects().then(async list => {
       if (!active) return;
       setProjects(list);
+      const requestedProjectName = new URLSearchParams(window.location.search).get('project');
+      const requestedProject = list?.find(project => project.name === requestedProjectName);
+      if (requestedProject && !requestedProject.error && !requestedProjectOpened.current && !projectOpened.current) {
+        requestedProjectOpened.current = true;
+        projectOpened.current = true;
+        await openLocal(requestedProject, true);
+        const url = new URL(window.location.href);
+        url.searchParams.delete('project');
+        window.history.replaceState(null, '', url);
+        return;
+      }
       const entries = readRecent();
       const missing = list ? entries.filter(entry => entry.kind === 'server' && !list.some(project => project.name === entry.serverName)) : [];
       const available = entries.filter(entry => !missing.includes(entry));
@@ -117,6 +129,7 @@ function Workspace() {
   }, []);
   const [visible, setVisible] = useState<string[]>([...GROUPS]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [drawTool, setDrawTool] = useState<DrawTool | null>(null);
   const [dragStale, setDragStale] = useState<boolean | null>(null);
   const [error, setError] = useState<EditorError | null>(null);
   const update = (next: Rig) => {
@@ -130,6 +143,7 @@ function Workspace() {
   const openFile = async (file?: File) => {
     if (!file || jobRef.current || localProject?.hasSource === false) return;
     try {
+      setDrawTool(null);
       update(parseRig(JSON.parse(await file.text())));
       setSelected(null);
       setLocalProject(null);
@@ -146,6 +160,7 @@ function Workspace() {
         setSavedRig(JSON.stringify(project.rig));
         setBuiltSignature(layerSignature(project.rig));
       }
+      setDrawTool(null);
       setSelected(null);
       objectUrls.current.forEach(url => URL.revokeObjectURL(url));
       objectUrls.current = project.urls;
@@ -182,6 +197,7 @@ function Workspace() {
       const project = await openLocalProject(entry);
       projectOpened.current = true;
       history.load(project.rig!); setRig(history.present); setDragStale(null); setBuiltSignature(layerSignature(project.rig!));
+      setDrawTool(null);
       setSavedRig(JSON.stringify(project.rig)); pickedFiles.current = undefined;
       setSelected(null); setLocalProject(entry); setPickedName('');
       objectUrls.current.forEach(url => URL.revokeObjectURL(url)); objectUrls.current = [];
@@ -217,7 +233,7 @@ function Workspace() {
   };
   useEffect(() => {
     const keyboard = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { setHelp(false); if (openMenu.current) openMenu.current.open = false; }
+      if (event.key === 'Escape') { setHelp(false); setDrawTool(null); if (openMenu.current) openMenu.current.open = false; }
       if (!(event.ctrlKey || event.metaKey)) return;
       if (jobRef.current) { if (['s', 'z'].includes(event.key.toLowerCase())) event.preventDefault(); return; }
       const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement;
@@ -230,7 +246,15 @@ function Workspace() {
     window.addEventListener('keydown', keyboard);
     return () => window.removeEventListener('keydown', keyboard);
   }, [history]);
-  const selectPart = (group: string) => { setSelected(group); setVisible(current => current.includes(group) ? current : [...current, group]); };
+  const selectPart = (group: string) => { setDrawTool(null); setSelected(group); setVisible(current => current.includes(group) ? current : [...current, group]); };
+  const drawPart = (tool: DrawTool, start: Point, end: Point) => {
+    const next = drawRigPart(rig, tool, start, end);
+    update(next);
+    if (tool === 'strand') setSelected(`strands.${(next.strands?.length ?? 1) - 1}`);
+    else if (tool === 'shoulder') setSelected(`body.shoulders.${next.body.shoulders.length - 1}`);
+    else setSelected(`softBody.regions.${(next.softBody?.regions.length ?? 1) - 1}`);
+    setDrawTool(null);
+  };
   const selectedGroup = selected?.split('.')[0] as PartGroup | undefined;
   const selectedPart = selectedGroup && parts[selectedGroup];
   const currentLayers = JSON.parse(layerSignature(rig)), builtLayers = JSON.parse(builtSignature);
@@ -443,7 +467,7 @@ function Workspace() {
       {!playbackOnly && <section className="panel editor-panel" inert={busy}>
         <div className="panel-title"><h2>{t.source}</h2><span>{rig.image.width} × {rig.image.height} {t.px}</span></div>
         <div className="canvas-stage">
-          <EditorCanvas sourceUrl={sourceUrl} rig={rig} visible={visible} selected={selected} onSelect={setSelected} onChange={update} focusRequest={focusRequest}
+          <EditorCanvas sourceUrl={sourceUrl} rig={rig} visible={visible} selected={selected} onSelect={setSelected} onChange={update} drawTool={drawTool} onDraw={drawPart} focusRequest={focusRequest}
             onBegin={() => { history.begin(); setDragStale(changed.length > 0); }}
             onEnd={() => { history.end(); setRig(structuredClone(history.present)); setDragStale(null); }} />
           {guide && <FirstGuide onDismiss={dismissGuide} />}
@@ -457,6 +481,16 @@ function Workspace() {
           <div className="selection-heading"><h2>{selectedPart?.[0] ?? t.selection}</h2></div>
           {errorNotice}
           {selectedPart ? <><p className="part-description">{selectedPart[1]}</p><p className="part-tip"><strong>{t.tip}</strong> {selectedPart[2]}</p>
+            {selectedGroup === 'strands' && <div className="draw-tools" role="group" aria-label={t.drawTools}>
+              <button aria-pressed={drawTool === 'strand'} onClick={() => setDrawTool(current => current === 'strand' ? null : 'strand')}>{t.addStrand}</button>
+              {drawTool && <button onClick={() => setDrawTool(null)}>{t.cancelDraw}</button>}
+            </div>}
+            {selectedGroup === 'body' && <div className="draw-tools" role="group" aria-label={t.drawTools}>
+              <button aria-pressed={drawTool === 'shoulder'} onClick={() => setDrawTool(current => current === 'shoulder' ? null : 'shoulder')}>{t.drawShoulder}</button>
+              <button disabled={(rig.softBody?.regions.length ?? 0) >= 2} aria-pressed={drawTool === 'softBody'}
+                onClick={() => setDrawTool(current => current === 'softBody' ? null : 'softBody')}>{t.drawSoftBody}</button>
+              {drawTool && <button onClick={() => setDrawTool(null)}>{t.cancelDraw}</button>}
+            </div>}
             <div className="fields">{selected && <RigFields rig={rig} path={selected} onChange={(path, value) => update(setAt(rig, path, value))} />}</div></>
             : <div className="selection-empty"><p>{t.selectPart}</p><GuideSteps /></div>}
         </aside>}

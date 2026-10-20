@@ -87,7 +87,7 @@ async function main() {
         const av = await avatar();
         av.setParameters({ ...defaults, ...values });
         if (expression) av.setExpression(expression);
-        av.advance(1, 60);
+        av.advance(0, 60);
         pictures.push([name, canvas.toDataURL()]); av.destroy();
       }
       const av = await avatar();
@@ -95,6 +95,13 @@ async function main() {
       av.setParameters(defaults);
       for (const [i, seconds] of [0.05, 0.08, 0.12, 0.15, 0.2, 0.3].entries()) {
         av.advance(seconds, 60); pictures.push([`hair-sway-${i}`, canvas.toDataURL()]);
+      }
+      if (rig.softBody) {
+        av.setParameters(defaults);
+        av.triggerSoftBodyBounce(0.8);
+        for (const [i, seconds] of [0.04, 0.06, 0.08, 0.1, 0.12, 0.16].entries()) {
+          av.advance(seconds, 60); pictures.push([`soft-body-bounce-${i}`, canvas.toDataURL()]);
+        }
       }
       av.destroy();
       const scale = Math.min(width / (rig.image.width * 1.2), height / (rig.image.height * 1.1));
@@ -139,8 +146,9 @@ async function main() {
     if (relative(project, await realpath(review)).startsWith('..')) throw new Error('review folder must stay inside the project');
     for (const [name, url] of result.images) await writeFile(resolve(review, `${name}.png`), Buffer.from(url.split(',')[1], 'base64'));
     const { images, ...metadata } = result;
-    await writeFile(resolve(review, 'poses.json'), JSON.stringify({ ...metadata, project: basename(project), fixedFps: 60, poseSeconds: 1, poses: poses.map(([name, parameters, expression]) => ({ name, parameters, ...(expression && { expression }) })), hairFrames: 6, files: images.map(([name]) => `${name}.png`) }, null, 2) + '\n');
-    console.log(`Rendered ${poses.length + 6} poses, eye/mouth crops and contact-sheet.png in ${relative(root, review)}/`);
+    await writeFile(resolve(review, 'poses.json'), JSON.stringify({ ...metadata, project: basename(project), fixedFps: 60, poseSeconds: 1, poses: poses.map(([name, parameters, expression]) => ({ name, parameters, ...(expression && { expression }) })), hairFrames: 6, softBodyFrames: rig.softBody ? 6 : 0, softBodyImpulse: rig.softBody ? 0.8 : 0, files: images.map(([name]) => `${name}.png`) }, null, 2) + '\n');
+    const softBodyFrames = rig.softBody ? 6 : 0;
+    console.log(`Rendered ${poses.length + 6 + softBodyFrames} poses, eye/mouth crops and contact-sheet.png in ${relative(root, review)}/`);
   } finally {
     await browser?.close();
     await server.close();

@@ -45,6 +45,14 @@ const unit: Check = (v, p, e) => {
   number(v, p, e);
   if (typeof v === 'number' && (v < 0 || v > 1)) e.push(`${p}: must be between 0 and 1`);
 };
+const damping: Check = (v, p, e) => {
+  number(v, p, e);
+  if (typeof v === 'number' && (v <= 0 || v > 2)) e.push(`${p}: must be in (0, 2]`);
+};
+const frequency: Check = (v, p, e) => {
+  positive(v, p, e);
+  if (typeof v === 'number' && v > 12) e.push(`${p}: must not exceed 12 Hz`);
+};
 const schema = (draft: boolean) => object({
   version: (v, p, e) => { if (v !== 1) e.push(`${p}: only version 1 is supported`); },
   image: object({ width: integer, height: integer }),
@@ -68,11 +76,22 @@ const schema = (draft: boolean) => object({
     elbow: point, wrist: point, knuckle: point, contact: point, forearmShare: unit,
     armBand: band, wristBand: band, handBand: band, fingerXBand: band,
     fingerYBand: band, pinBand: band }),
+  skeleton: object({
+    joints: array(object({ name: string, position: point, visibility: unit }), 1),
+    bones: array(object({ from: string, to: string })),
+  }),
+  softBody: object({
+    regions: array(ellipse, 1, 2),
+    gain: unit,
+    maxOffset: positive,
+    frequency,
+    damping,
+  }),
   mesh: object({ baseCell: integer, fine: object({ x0: wholeNumber, x1: wholeNumber,
     y0: wholeNumber, y1: wholeNumber, cell: integer }), handCell: integer,
     tasselCell: integer, eyeBallCell: integer, eyeCell: integer, spriteCell: integer }),
   view: object({ padTop: number, padSide: number, gazeCenter: point }, ['gazeCenter']),
-}, ['buns', 'strands', 'accessories', 'hand']);
+}, ['buns', 'strands', 'accessories', 'hand', 'skeleton', 'softBody']);
 
 export function validateRig(value: unknown, options: { draft?: boolean } = {}): string[] {
   const errors: string[] = [];
@@ -103,6 +122,22 @@ export function validateRig(value: unknown, options: { draft?: boolean } = {}): 
     if (accessory.split <= 0 || accessory.split >= 1) errors.push(`rig.accessories[${i}].split: must be strictly between 0 and 1`);
     if (accessory.pivot.every((n, k) => n === accessory.tip[k])) errors.push(`rig.accessories[${i}].tip: must differ from pivot`);
     if (accessory.box[0] >= accessory.box[2] || accessory.box[1] >= accessory.box[3]) errors.push(`rig.accessories[${i}].box: rectangle must have positive area`);
+  }
+  if (rig.skeleton) {
+    const names = new Set<string>();
+    for (const [i, joint] of rig.skeleton.joints.entries()) {
+      if (names.has(joint.name)) errors.push(`rig.skeleton.joints[${i}].name: must be unique`);
+      names.add(joint.name);
+      if (joint.position[0] < 0 || joint.position[0] > rig.image.width
+        || joint.position[1] < 0 || joint.position[1] > rig.image.height) {
+        errors.push(`rig.skeleton.joints[${i}].position: must stay inside the image`);
+      }
+    }
+    for (const [i, bone] of rig.skeleton.bones.entries()) {
+      if (bone.from === bone.to || !names.has(bone.from) || !names.has(bone.to)) {
+        errors.push(`rig.skeleton.bones[${i}]: endpoints must name two different joints`);
+      }
+    }
   }
   return errors;
 }

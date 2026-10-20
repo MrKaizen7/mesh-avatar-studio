@@ -143,6 +143,9 @@ main:has(.project-location):has(.stale) .editor-panel { height: calc(100dvh - 21
 .part-description { font-size: 12px; color: var(--muted); }
 .part-tip { font-size: 12px; background: #f3f6fa; padding: 8px; border-radius: 8px; line-height: 1.5; }
 .part-tip strong { display: block; color: var(--ink); margin-bottom: 2px; }
+.draw-tools { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.draw-tools button { padding: 6px 9px; font-size: 12px; }
+.draw-tools button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: #b3cdfa; }
 .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
 .fields label { display: grid; gap: 4px; font-size: 12px; min-width: 0; overflow-wrap: anywhere; }
 .fields label > span { color: var(--muted); }

@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest';
 import fixture from '../samples/miko-qipao/rig.json';
 import { parseRig, validateRig } from 'mesh-avatar';
-import { buildOverlay, changeVertex, moveHandle, nearestHandle, getAt, setAt } from '../src/editor/model';
+import { buildOverlay, changeVertex, drawRigPart, moveHandle, nearestHandle, getAt, setAt } from '../src/editor/model';
 
 const view = { scale: 0.5, x: 20, y: 10 };
 test('hit-testing finds the nearest handle within eight screen pixels', () => {
@@ -31,6 +31,33 @@ test('vertex insertion and deletion preserve polygon and polyline minimum sizes'
   while (rig.strands![0].nodes.length > 2) rig = changeVertex(rig, 'strands.0.nodes', 0, null, false);
   expect(changeVertex(rig, 'strands.0.nodes', 0, null, false).strands![0].nodes).toHaveLength(2);
   expect(validateRig(rig)).toEqual([]);
+});
+
+test('manual drawing adds a four-node hair strand to a rig with no strands', () => {
+  const rig = parseRig(fixture);
+  delete rig.strands;
+  const next = drawRigPart(rig, 'strand', [100, 200], [220, 260]);
+  expect(next.strands).toHaveLength(1);
+  expect(next.strands![0]).toMatchObject({
+    name: 'strand-1',
+    nodes: [[100, 200], [140, 220], [180, 240], [220, 260]],
+    k: 1,
+    max: 8,
+  });
+  expect(validateRig(next)).toEqual([]);
+});
+
+test('manual ellipses add shoulder and soft-body influence to the body overlay', () => {
+  const rig = parseRig(fixture);
+  const shoulderRig = drawRigPart(rig, 'shoulder', [300, 400], [380, 460]);
+  expect(shoulderRig.body.shoulders.at(-1)).toEqual({ cx: 340, cy: 430, rx: 40, ry: 30 });
+  const softBodyRig = drawRigPart(rig, 'softBody', [300, 400], [380, 460]);
+  expect(softBodyRig.softBody?.regions).toHaveLength(1);
+  expect(buildOverlay(softBodyRig).shapes).toContainEqual(expect.objectContaining({
+    item: 'softBody.regions.0', group: 'body', kind: 'ellipse',
+  }));
+  expect(validateRig(shoulderRig)).toEqual([]);
+  expect(validateRig(softBodyRig)).toEqual([]);
 });
 
 

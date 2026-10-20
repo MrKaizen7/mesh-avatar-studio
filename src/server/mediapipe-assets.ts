@@ -11,6 +11,7 @@ export function mediapipeAssets(root: string, prefix = '/'): Plugin {
     ...['vision_wasm_internal.js', 'vision_wasm_internal.wasm', 'vision_wasm_nosimd_internal.js', 'vision_wasm_nosimd_internal.wasm']
       .map(name => [name, resolve(root, 'node_modules/@mediapipe/tasks-vision/wasm', name)] as const),
     ['face_landmarker.task', resolve(root, 'vendor/mediapipe/face_landmarker.task')],
+    ['pose_landmarker_lite.task', resolve(root, 'vendor/mediapipe/pose_landmarker_lite.task')],
     ['LICENSE', resolve(root, 'vendor/mediapipe/LICENSE')],
     ['README.md', resolve(root, 'vendor/mediapipe/README.md')],
   ]);

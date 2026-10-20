@@ -37,6 +37,51 @@ test('dragging a head handle synchronizes the inspector', async ({ page }) => {
   expect(saved.eyes[0].top).toEqual(fixture.eyes[0].top);
 });
 
+test('selects a missing hair part, draws it, cancels with Escape, and keeps drawing undoable', async ({ page }) => {
+  test.skip(!samplePresent, sampleSkipReason);
+  await page.goto('/');
+  await dismissGuide(page);
+  await expect(page.getByText('Engine ready', { exact: true })).toBeVisible();
+  const rig = structuredClone(fixture) as Partial<typeof fixture>;
+  delete rig.strands;
+  await page.getByLabel('Open rig file', { exact: true }).setInputFiles({
+    name: 'rig.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(rig)),
+  });
+  const part = page.getByTestId('part-strands');
+  const partRow = part.locator('..');
+  await expect(part).toBeEnabled();
+  await part.click();
+  const drawButton = page.getByRole('button', { name: 'Draw hair strand', exact: true });
+  await drawButton.click();
+  const canvas = page.getByTestId('editor');
+  await expect(canvas).toHaveAttribute('data-draw-tool', 'strand');
+  await page.keyboard.press('Escape');
+  await expect(canvas).toHaveAttribute('data-draw-tool', '');
+  await drawButton.click();
+  const bounds = (await canvas.boundingBox())!;
+  const scale = Number(await canvas.getAttribute('data-scale'));
+  const xOffset = Number(await canvas.getAttribute('data-offset-x'));
+  const yOffset = Number(await canvas.getAttribute('data-offset-y'));
+  const start = [bounds.x + xOffset + 700 * scale, bounds.y + yOffset + 590 * scale];
+  const end = [bounds.x + xOffset + 790 * scale, bounds.y + yOffset + 680 * scale];
+  await page.mouse.move(start[0], start[1]);
+  await page.mouse.down();
+  await page.mouse.move(end[0], end[1], { steps: 4 });
+  await page.mouse.up();
+  await expect(canvas).toHaveAttribute('data-draw-tool', '');
+  await expect(partRow).not.toHaveClass(/is-absent/);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(partRow).toHaveClass(/is-absent/);
+  await page.getByRole('button', { name: 'Redo', exact: true }).click();
+  await expect(partRow).not.toHaveClass(/is-absent/);
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save rig', exact: true }).click();
+  const savedPath = await (await downloadPromise).path();
+  const saved = JSON.parse(await readFile(savedPath!, 'utf8'));
+  expect(saved.strands).toHaveLength(1);
+  expect(saved.strands[0].nodes).toHaveLength(4);
+});
+
 test('opens a validated rig and rejects malformed files without replacing the project', async ({ page }) => {
   test.skip(!samplePresent, sampleSkipReason);
   await page.goto('/');

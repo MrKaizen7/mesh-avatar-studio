@@ -10,7 +10,7 @@ radii and mesh cell sizes must be positive. Mesh cell sizes and fine-mesh rectan
 coordinates must be integers. Accessory boxes must be integer rectangles inside the image. A band is `[start, end]` with `start < end`.
 Ellipses are smooth influence regions, not hard cut-out boundaries.
 
-Only `buns`, `strands`, `accessories`, `hand` and `view.gazeCenter` are optional. Omit absent
+Only `buns`, `strands`, `accessories`, `hand`, `skeleton`, `softBody` and `view.gazeCenter` are optional. Omit absent
 optional groups. Required regions must still be placed even if their animation will be small.
 The initial draft has empty eye polygons and is intentionally invalid until they are traced.
 See [agent-guide.md](agent-guide.md) for the process and [rig-mapping.md](rig-mapping.md) for
@@ -45,6 +45,13 @@ the engine mapping. Do not copy the example illustration's coordinates into a ne
 | `body.shoulders[*].cy` | Shoulder centre y, px; on the visible shoulder. |
 | `body.shoulders[*].rx` | Shoulder horizontal radius, px; cover shoulder width. |
 | `body.shoulders[*].ry` | Shoulder vertical radius, px; cover shoulder height. |
+| `softBody.regions[*]` | One or two ellipse influence regions for secondary chest motion; auto-rig estimates these and they should be checked against the artwork. |
+| `softBody.gain` | Movement-response multiplier, 0–1; zero disables movement-driven bounce. |
+| `softBody.maxOffset` | Maximum secondary-motion displacement, px. |
+| `softBody.frequency` | Spring frequency, Hz; must not exceed 12. |
+| `softBody.damping` | Damping ratio in `(0, 2]`; higher values settle more quickly. |
+| `skeleton.joints[*]` | Pose-guide joint name, image-space `[x,y]` position and visibility confidence, 0–1. |
+| `skeleton.bones[*]` | Names of two distinct joints connected by a pose-guide bone; this metadata does not animate limbs. |
 | `face.nose.cx` | Horizontal centre, px; Nose influence ellipse, px; centre on nose tip, radii around bridge/tip region. |
 | `face.nose.cy` | Vertical centre, px; Nose influence ellipse, px; centre on nose tip, radii around bridge/tip region. |
 | `face.nose.rx` | Horizontal influence radius, px; Nose influence ellipse, px; centre on nose tip, radii around bridge/tip region. |

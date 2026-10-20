@@ -19,7 +19,7 @@ export function PartList({ rig, visible, selected, onSelect, onFocus, onVisible 
         const present = partPresent(rig, group), shown = present && visible.includes(group);
         return <div key={group} className={`part-row ${selected?.split('.')[0] === group ? 'is-selected' : ''} ${present ? '' : 'is-absent'}`}
           data-part={group} data-visible={shown}>
-          <button className="part-select" data-testid={`part-${group}`} disabled={!present}
+          <button className="part-select" data-testid={`part-${group}`} disabled={!present && group !== 'strands'}
             aria-pressed={selected?.split('.')[0] === group} onClick={() => onSelect(group)} onDoubleClick={() => onFocus(group)}>
             <span className="part-swatch" style={{ background: PART_COLORS[group] }} />
             <span><strong>{parts[group][0]}</strong><small title={present ? parts[group][1] : t.notPresent}>{present ? parts[group][1] : t.notPresent}</small></span>

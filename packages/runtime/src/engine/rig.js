@@ -158,6 +158,7 @@ export function createRig(rig) {
       chest: gaussian(x, y, BODY.chest),
       breath: 1 - sstep(...BODY.breathBand, y),
       shoulder: BODY.shoulders.reduce((sum, area) => sum + gaussian(x, y, area), 0),
+      softBody: (rig.softBody?.regions ?? []).map(region => gaussian(x, y, region)),
     };
   }
 
@@ -211,6 +212,12 @@ export function createRig(rig) {
     }
     p[0] += (phys.bunL[0] * w.bunL + phys.bunR[0] * w.bunR) * g;
     p[1] += (phys.bunL[1] * w.bunL + phys.bunR[1] * w.bunR) * g;
+    if (phys.softBody) {
+      for (let i = 0; i < w.softBody.length; i++) {
+        p[0] += phys.softBody[0] * w.softBody[i];
+        p[1] += phys.softBody[1] * w.softBody[i];
+      }
+    }
     // brows
     p[1] -= P.browY * 7 * w.brow;
     if (w.brow > 0.01) {

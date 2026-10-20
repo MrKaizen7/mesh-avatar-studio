@@ -1,7 +1,8 @@
 import { editorNumber, isIntegerField } from '../../packages/runtime/src/rig/numeric';
-import type { Point, Rig } from 'mesh-avatar';
+import type { Point, Rig, SoftBody, Strand } from 'mesh-avatar';
 
 export interface Viewport { scale: number; x: number; y: number }
+export type DrawTool = 'strand' | 'shoulder' | 'softBody';
 export interface Handle {
   id: string;
   item: string;
@@ -33,6 +34,47 @@ export function setAt(rig: Rig, path: string, value: unknown): Rig {
   let target = next as unknown as Record<string, unknown>;
   for (const part of parts.slice(0, -1)) target = target[part] as Record<string, unknown>;
   target[parts.at(-1)!] = typeof value === 'number' ? editorNumber(path, value) : value;
+  return next;
+}
+export function drawRigPart(rig: Rig, tool: DrawTool, start: Point, end: Point): Rig {
+  const next = structuredClone(rig);
+  if (tool === 'strand') {
+    const index = (next.strands ?? []).length;
+    const names = new Set((next.strands ?? []).map(strand => strand.name));
+    let name = `strand-${index + 1}`;
+    for (let suffix = index + 2; names.has(name); suffix++) name = `strand-${suffix}`;
+    const length = Math.hypot(end[0] - start[0], end[1] - start[1]);
+    const strand: Strand = {
+      name,
+      nodes: [0, 1 / 3, 2 / 3, 1].map(t => [
+        start[0] + (end[0] - start[0]) * t,
+        start[1] + (end[1] - start[1]) * t,
+      ]),
+      sigma: Math.max(12, length * 0.1),
+      k: 1,
+      max: 8,
+    };
+    next.strands = [...(next.strands ?? []), strand];
+  } else {
+    const region = {
+      cx: (start[0] + end[0]) / 2,
+      cy: (start[1] + end[1]) / 2,
+      rx: Math.max(2, Math.abs(end[0] - start[0]) / 2),
+      ry: Math.max(2, Math.abs(end[1] - start[1]) / 2),
+    };
+    if (tool === 'shoulder') next.body.shoulders.push(region);
+    else {
+      const softBody: SoftBody = next.softBody ?? {
+        regions: [],
+        gain: 0.65,
+        maxOffset: Math.min(18, Math.max(2, region.ry * 0.35)),
+        frequency: 3.5,
+        damping: 0.65,
+      };
+      softBody.regions.push(region);
+      next.softBody = softBody;
+    }
+  }
   return next;
 }
 export function numericFields(value: unknown, path: string): { path: string; value: number }[] {
@@ -165,6 +207,8 @@ export function buildOverlay(rig: Rig): { handles: Handle[]; shapes: Shape[] } {
     }
     Object.entries(object).forEach(([key, child]) => walk(child, `${path}.${key}`, group));
   }
-  Object.entries(rig).forEach(([group, value]) => { if (group !== 'image') walk(value, group, group); });
+  Object.entries(rig).forEach(([group, value]) => {
+    if (group !== 'image') walk(value, group, group === 'softBody' ? 'body' : group);
+  });
   return { handles, shapes };
 }

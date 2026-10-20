@@ -74,6 +74,13 @@ may need manual retouching. Inpainting approximates the artwork hidden behind ha
 ## Editing
 
 - Drag a handle or select an item to edit its numeric fields.
+- Select **Hair & accessories → Hair strands** even when no strands are in the rig, then choose
+  **Draw hair strand** and drag from the root toward the tip. Select **Body** to draw shoulder
+  influence or soft-body bounce ellipses. The preview follows the pointer; press **Escape** to
+  cancel, and use **Undo** / **Redo** to revert or restore a completed stroke.
+- Ellipses are smooth influence regions, not cut-out masks: size them around the visible pixels
+  that should move. Drawing a strand or ellipse does not add articulated arm or leg joints;
+  skeleton lines remain pose-guide metadata rather than limb animation.
 - Double-click a polygon/polyline edge to insert a vertex; Alt-click a vertex to remove it.
 - Pinch to zoom at the cursor; two-finger scrolling pans. A mouse wheel zooms by default;
   **Mouse wheel** can switch it to panning. Ctrl/Cmd-scroll always zooms.

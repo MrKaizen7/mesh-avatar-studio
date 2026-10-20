@@ -41,6 +41,26 @@ export interface Hand {
   fingerYBand: Band;
   pinBand: Band;
 }
+export interface SkeletonJoint {
+  name: string;
+  position: Point;
+  visibility: number;
+}
+export interface SkeletonBone {
+  from: string;
+  to: string;
+}
+export interface Skeleton {
+  joints: SkeletonJoint[];
+  bones: SkeletonBone[];
+}
+export interface SoftBody {
+  regions: Ellipse[];
+  gain: number;
+  maxOffset: number;
+  frequency: number;
+  damping: number;
+}
 export interface Rig {
   version: 1;
   image: { width: number; height: number };
@@ -66,6 +86,8 @@ export interface Rig {
   strands?: Strand[];
   accessories?: Accessory[];
   hand?: Hand;
+  skeleton?: Skeleton;
+  softBody?: SoftBody;
   mesh: {
     baseCell: number;
     fine: { x0: number; x1: number; y0: number; y1: number; cell: number };

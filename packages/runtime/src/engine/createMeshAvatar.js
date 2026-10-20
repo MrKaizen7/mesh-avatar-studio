@@ -249,6 +249,8 @@ export async function createMeshAvatarImpl(canvas, options) {
     setAutoMotion(on) { motion.autoMotion = !!on; },
     /** Hair / tassel sway multiplier (1 = default). */
     setSwayGain(g) { physics.gain = g; },
+    setSoftBodyGain(g) { physics.setSoftBodyGain(g); },
+    triggerSoftBodyBounce(strength = 1) { physics.triggerSoftBodyBounce(strength); },
     /** Called with the motion id when a motion starts and with null when it ends. */
     onMotion(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     /** Advance the simulation by `sec` and draw (for tests / hidden tabs). */

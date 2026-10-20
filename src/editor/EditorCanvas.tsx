@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Point, Rig } from 'mesh-avatar';
-import { buildOverlay, changeVertex, imagePoint, moveHandle, nearestEdge, nearestHandle, screen, type Handle, type Viewport } from './model';
+import { buildOverlay, changeVertex, imagePoint, moveHandle, nearestEdge, nearestHandle, screen, type DrawTool, type Handle, type Viewport } from './model';
 import { useI18n, type PartGroup } from './i18n';
 import { PART_COLORS } from './parts';
 import { readPreference, savePreference } from './preferences';
@@ -13,11 +13,13 @@ interface Props {
   selected: string | null;
   onSelect: (path: string) => void;
   onChange: (rig: Rig) => void;
+  drawTool?: DrawTool | null;
+  onDraw?: (tool: DrawTool, start: Point, end: Point) => void;
   onBegin?: () => void;
   onEnd?: () => void;
   focusRequest?: { group: string; id: number };
 }
-export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onChange, onBegin, onEnd, focusRequest }: Props) {
+export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onChange, drawTool, onDraw, onBegin, onEnd, focusRequest }: Props) {
   const { t, title } = useI18n();
   const canvas = useRef<HTMLCanvasElement>(null);
   const source = useRef<HTMLImageElement | null>(null);
@@ -35,14 +37,15 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
   const space = useRef(false);
   const [hover, setHover] = useState<{ handle: Handle; point: Point } | null>(null);
   const [dragging, setDragging] = useState(false);
-  const drag = useRef<{ handle?: Handle; rig: Rig; start: Point; view: Viewport; offset: Point } | null>(null);
+  const [drawPreview, setDrawPreview] = useState<{ tool: DrawTool; start: Point; end: Point } | null>(null);
+  const drag = useRef<{ handle?: Handle; drawTool?: DrawTool; drawStart?: Point; rig: Rig; start: Point; view: Viewport; offset: Point } | null>(null);
   const overlay = useMemo(() => buildOverlay(rig), [rig]);
   const handles = overlay.handles.filter(h => visible.includes(h.group));
   const shapes = overlay.shapes.filter(s => visible.includes(s.group));
   const focusGroup = selected?.split('.')[0] ?? '';
   const interactiveHandles = handles.filter(h => !focusGroup || h.group === focusGroup);
   const interactiveShapes = shapes.filter(s => !focusGroup || s.group === focusGroup);
-  const hint = !selected ? t.pickHint : interactiveShapes.some(s => s.editable) ? t.lineHint : interactiveHandles.length ? t.dragHint : t.noDots;
+  const hint = drawTool ? t.drawHint : !selected ? t.pickHint : interactiveShapes.some(s => s.editable) ? t.lineHint : interactiveHandles.length ? t.dragHint : t.noDots;
   useEffect(() => {
     setImageReady(false); source.current = null;
     const image = new Image();
@@ -119,6 +122,13 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
     return () => window.removeEventListener('keydown', keyboard);
   }, [size, rig.image.width, rig.image.height]);
   useEffect(() => {
+    if (drawTool || !drag.current?.drawTool) return;
+    drag.current = null;
+    setDrawPreview(null);
+    setDragging(false);
+    onEnd?.();
+  }, [drawTool, onEnd]);
+  useEffect(() => {
     const element = canvas.current!;
     element.width = Math.round(size.width);
     element.height = Math.round(size.height);
@@ -161,8 +171,26 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
       context.lineWidth = 1;
       context.stroke();
     }
+    if (drawPreview) {
+      const start = screen(drawPreview.start, view), end = screen(drawPreview.end, view);
+      context.save();
+      context.globalAlpha = 0.9;
+      context.strokeStyle = PART_COLORS[drawPreview.tool === 'strand' ? 'strands' : 'body'];
+      context.lineWidth = 2;
+      context.setLineDash([6, 4]);
+      context.beginPath();
+      if (drawPreview.tool === 'strand') {
+        context.moveTo(start[0], start[1]);
+        context.lineTo(end[0], end[1]);
+      } else {
+        context.ellipse((start[0] + end[0]) / 2, (start[1] + end[1]) / 2,
+          Math.max(2, Math.abs(end[0] - start[0]) / 2), Math.max(2, Math.abs(end[1] - start[1]) / 2), 0, 0, Math.PI * 2);
+      }
+      context.stroke();
+      context.restore();
+    }
     context.globalAlpha = 1;
-  }, [rig, handles, shapes, selected, focusGroup, size, imageReady, view]);
+  }, [rig, handles, shapes, selected, focusGroup, size, imageReady, view, drawPreview]);
   const local = (event: { clientX: number; clientY: number }): Point => {
     const rect = canvas.current!.getBoundingClientRect();
     return [event.clientX - rect.left, event.clientY - rect.top];
@@ -175,7 +203,8 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
         data-focus-group={focusGroup} data-visible-groups={visible.join(',')}
         data-dimmed-groups={focusGroup ? visible.filter(g => g !== focusGroup).join(',') : ''}
         data-inactive-opacity={focusGroup ? '0.2' : '0.6'}
-        style={{ cursor: dragging ? 'grabbing' : 'grab' }}
+        data-draw-tool={drawTool ?? ''}
+        style={{ cursor: drawTool ? 'crosshair' : dragging ? 'grabbing' : 'grab' }}
         onKeyDown={event => { if (event.code === 'Space') { event.preventDefault(); space.current = true; } }}
         onKeyUp={event => { if (event.code === 'Space') space.current = false; }}
         onBlur={() => { space.current = false; }}
@@ -186,6 +215,11 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
           const point = local(event);
           if (event.button === 1 || space.current) {
             drag.current = { rig, start: point, view: { ...viewRef.current }, offset: [0, 0] };
+          } else if (event.button === 0 && drawTool) {
+            const start = imagePoint(point, viewRef.current);
+            drag.current = { rig, start: point, view: { ...viewRef.current }, offset: [0, 0], drawTool, drawStart: start };
+            setDrawPreview({ tool: drawTool, start, end: start });
+            onBegin?.();
           } else if (event.button === 0) {
             const handle = nearestHandle(interactiveHandles, point, view);
             if (!handle) {
@@ -212,15 +246,28 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
             return;
           }
           const point = local(event), current = drag.current;
-          if (!current.handle) setViewport({ ...current.view, x: current.view.x + point[0] - current.start[0], y: current.view.y + point[1] - current.start[1] });
+          if (current.drawTool && current.drawStart) setDrawPreview({ tool: current.drawTool, start: current.drawStart, end: imagePoint(point, current.view) });
+          else if (!current.handle) setViewport({ ...current.view, x: current.view.x + point[0] - current.start[0], y: current.view.y + point[1] - current.start[1] });
           else {
             const target = imagePoint(point, view);
             onChange(moveHandle(current.rig, current.handle, [target[0] + current.offset[0], target[1] + current.offset[1]]));
           }
         }}
         onPointerLeave={() => setHover(null)}
-        onPointerUp={() => { if (drag.current?.handle) onEnd?.(); drag.current = null; setDragging(false); }}
-        onPointerCancel={() => { if (drag.current?.handle) onEnd?.(); drag.current = null; setDragging(false); }}
+        onPointerUp={event => {
+          const current = drag.current;
+          if (current?.drawTool && current.drawStart) {
+            const end = imagePoint(local(event), current.view);
+            if (Math.hypot(end[0] - current.drawStart[0], end[1] - current.drawStart[1]) >= 4)
+              onDraw?.(current.drawTool, current.drawStart, end);
+            onEnd?.();
+          } else if (current?.handle) onEnd?.();
+          drag.current = null; setDrawPreview(null); setDragging(false);
+        }}
+        onPointerCancel={() => {
+          if (drag.current?.drawTool || drag.current?.handle) onEnd?.();
+          drag.current = null; setDrawPreview(null); setDragging(false);
+        }}
         onDoubleClick={event => {
           const edge = nearestEdge(interactiveShapes, local(event), view);
           if (edge) {

@@ -12,6 +12,16 @@ and `package-lock.json`. Its JavaScript and WASM are licensed under Apache-2.0.
 Vite serves the installed WASM files at `/mediapipe/` and includes them, this model,
 and these notices in builds. No CDN or remote model request is needed at runtime.
 
+## MediaPipe Pose Landmarker Lite
+
+- Asset: `pose_landmarker_lite.task`, Pose Landmarker Lite float16, model version 1.
+- Source: https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task
+- SHA-256: `59929e1d1ee95287735ddd833b19cf4ac46d29bc7afddbf6753c459690d574a`
+- The model is unmodified. Copyright: The MediaPipe Authors. Licensed under Apache-2.0;
+  see [LICENSE](LICENSE). Distributed without warranties or conditions of any kind.
+- Inference runs locally in the browser. Stylized-image landmarks are estimates and
+  must be reviewed; the generated skeleton is metadata, not yet an articulated limb solver.
+
 This version is retained because version 1.0.1 includes metrics reporting to an external
 service. Before upgrading, inspect the JavaScript bundle and WASM loading scripts for
 telemetry and remote asset URLs, then run the live and stream network-isolation tests
