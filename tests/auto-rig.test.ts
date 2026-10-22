@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { validateRig } from 'mesh-avatar';
+import { parseRig, validateRig } from 'mesh-avatar';
+import fixture from '../samples/miko-qipao/rig.json';
 import {
   applyPoseSkeletonToRig,
   buildAnimeAutoRigDraft,
   buildAutoRigDraft,
   buildPoseSkeleton,
+  completeAutoRigDraft,
+  selectFaceForHeadGuide,
 } from '../src/editor/auto-rig';
 
 function landmarks() {
@@ -80,6 +83,41 @@ describe('automatic face rigging', () => {
     expect(rig.face.eyeA.cx).toBeLessThan(rig.face.eyeB.cx);
     expect(faceBounds.left).toBe(30);
     expect(lowConfidenceLandmarks).toBe(false);
+  });
+
+  it('completes an auto-rig draft with runtime eye curves and keeps authored optional rigs', () => {
+    const current = parseRig(fixture);
+    const { rig: draft } = buildAnimeAutoRigDraft(current.image.width, current.image.height, animeDetection());
+    const completed = completeAutoRigDraft(draft, current);
+
+    expect(validateRig(completed)).toEqual([]);
+    expect(completed.eyes).toHaveLength(2);
+    expect(completed.eyes[0].top).toHaveLength(24);
+    expect(completed.eyes[0].bot).toHaveLength(24);
+    expect(completed.strands).toEqual(current.strands);
+    expect(completed.accessories).toEqual(current.accessories);
+    expect(completed.hand).toEqual(current.hand);
+  });
+
+  it('completes a new-image draft without carrying optional rigs from another avatar', () => {
+    const { rig: draft } = buildAnimeAutoRigDraft(100, 100, animeDetection());
+    const completed = completeAutoRigDraft(draft);
+
+    expect(validateRig(completed)).toEqual([]);
+    expect(completed.eyes[0].top).toHaveLength(24);
+    expect(completed.strands).toBeUndefined();
+    expect(completed.accessories).toBeUndefined();
+    expect(completed.hand).toBeUndefined();
+  });
+
+  it('selects the detected face closest in position and size to the current head guide', () => {
+    const head = { ...parseRig(fixture).head, cx: 520, cy: 340, rx: 100, ry: 120 };
+    const faces = [
+      { left: 80, top: 70, right: 240, bottom: 260 },
+      { left: 430, top: 190, right: 590, bottom: 460 },
+    ];
+    expect(selectFaceForHeadGuide(faces, head)).toBe(1);
+    expect(selectFaceForHeadGuide([faces[0]], head)).toBe(0);
   });
 
   it('rejects incomplete anime face landmarks', () => {

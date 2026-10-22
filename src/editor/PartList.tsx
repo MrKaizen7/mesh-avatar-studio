@@ -6,6 +6,7 @@ export function PartList({ rig, visible, selected, onSelect, onFocus, onVisible 
   rig: Rig; visible: string[]; selected: string | null; onSelect: (group: string) => void; onFocus: (group: string) => void; onVisible: (groups: string[]) => void;
 }) {
   const { t, parts } = useI18n();
+  const selectedGroup = selected?.split('.')[0];
   const section = (groups: readonly PartGroup[]) => {
     const available = groups.filter(group => partPresent(rig, group));
     const allShown = available.every(group => visible.includes(group));
@@ -17,10 +18,10 @@ export function PartList({ rig, visible, selected, onSelect, onFocus, onVisible 
       </button>
       <div className="part-rows">{groups.map(group => {
         const present = partPresent(rig, group), shown = present && visible.includes(group);
-        return <div key={group} className={`part-row ${selected?.split('.')[0] === group ? 'is-selected' : ''} ${present ? '' : 'is-absent'}`}
+        return <div key={group} className={`part-row ${selectedGroup === group ? 'is-selected' : ''} ${present ? '' : 'is-absent'}`}
           data-part={group} data-visible={shown}>
-          <button className="part-select" data-testid={`part-${group}`} disabled={!present && group !== 'strands'}
-            aria-pressed={selected?.split('.')[0] === group} onClick={() => onSelect(group)} onDoubleClick={() => onFocus(group)}>
+          <button className="part-select" data-testid={`part-${group}`}
+            aria-pressed={selectedGroup === group} onClick={() => onSelect(group)} onDoubleClick={() => onFocus(group)}>
             <span className="part-swatch" style={{ background: PART_COLORS[group] }} />
             <span><strong>{parts[group][0]}</strong><small title={present ? parts[group][1] : t.notPresent}>{present ? parts[group][1] : t.notPresent}</small></span>
           </button>

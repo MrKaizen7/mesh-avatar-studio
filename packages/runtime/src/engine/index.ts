@@ -39,6 +39,7 @@ export interface MeshAvatar {
   setSwayGain(gain: number): void;
   setSoftBodyGain(gain: number): void;
   triggerSoftBodyBounce(strength?: number): void;
+  getSoftBodyOffset(): [number, number];
   onMotion(listener: (id: string | null) => void): () => void;
   advance(seconds: number, fps?: number): void;
   advanceParameters(seconds: number): void;

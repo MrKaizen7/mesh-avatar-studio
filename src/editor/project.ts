@@ -1,4 +1,5 @@
 import { openAvatar, parseRig, type Rig, type AvatarPackage } from 'mesh-avatar';
+import type { AutoRigDraft } from './auto-rig';
 import type { LocalProject, LocalProjectEntry } from '../project-types';
 import { FolderOpenError } from './folder-errors';
 import { packProjectAvatar } from '../../packages/runtime/src/format/project-archive';
@@ -72,6 +73,81 @@ export async function copySample(rig: Rig): Promise<LocalProject> {
   const response = await fetch('/__studio/copy-sample', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rig) });
   if (!response.ok) throw new Error('Could not copy the sample.');
   return response.json();
+}
+export async function createImageProject(image: Blob, name: string, rig: Rig): Promise<{
+  project: LocalProject;
+  warnings: string[];
+  layerBuildError?: string;
+}> {
+  if (image.type !== 'image/png' || image.size > 50 * 1024 * 1024) {
+    throw new Error('Choose a PNG image no larger than 50 MiB.');
+  }
+  const bytes = new Uint8Array(await image.arrayBuffer());
+  let binary = '';
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  const response = await fetch('/__studio/create-image-project', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image: btoa(binary), name, rig }),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error ?? 'Could not create a project from this image.');
+  return result;
+}
+export async function requestAutoRig(
+  project: LocalProject,
+  head: Rig['head'],
+): Promise<{ rig: AutoRigDraft; warnings: string[] }> {
+  const response = await fetch(`${baseUrl(project)}auto-rig`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      head_guide: { cx: head.cx, cy: head.cy, rx: head.rx, ry: head.ry },
+    }),
+  });
+  let result: { rig?: AutoRigDraft; warnings?: unknown; error?: unknown };
+  try {
+    result = await response.json();
+  } catch (error) {
+    throw new Error(`Auto-rig service returned invalid JSON: ${(error as Error).message}`);
+  }
+  if (!response.ok) {
+    throw new Error(typeof result.error === 'string' ? result.error : `Auto-rig request failed (HTTP ${response.status}).`);
+  }
+  if (!result.rig || typeof result.rig !== 'object' || Array.isArray(result.rig)) {
+    throw new Error('Auto-rig service did not return a rig suggestion.');
+  }
+  return {
+    rig: result.rig,
+    warnings: Array.isArray(result.warnings) ? result.warnings.filter((warning): warning is string => typeof warning === 'string') : [],
+  };
+}
+export async function imageAsPng(file: File): Promise<Blob> {
+  if (!file.type.startsWith('image/')) throw new Error('Choose an image file.');
+  if (file.size > 50 * 1024 * 1024) throw new Error('Image files must be no larger than 50 MiB.');
+  const bitmap = await createImageBitmap(file);
+  try {
+    if (bitmap.width > 16_384 || bitmap.height > 16_384 || bitmap.width * bitmap.height > 40_000_000) {
+      throw new Error('Image dimensions must be at most 16,384 px per side and 40 megapixels total.');
+    }
+    if (file.type === 'image/png') return file;
+    const canvas = document.createElement('canvas');
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Could not prepare the image for auto-rigging.');
+    context.drawImage(bitmap, 0, 0);
+    const png = await new Promise<Blob>((resolve, reject) => canvas.toBlob(
+      blob => blob ? resolve(blob) : reject(new Error('Could not convert this image to PNG.')),
+      'image/png',
+    ));
+    if (png.size > 50 * 1024 * 1024) throw new Error('Converted PNG exceeds 50 MiB.');
+    return png;
+  } finally {
+    bitmap.close();
+  }
 }
 export async function importAvatar(file: File): Promise<LocalProject> {
   if (file.size > 128 * 1024 * 1024) throw new Error('Archive exceeds 128 MiB.');

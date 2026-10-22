@@ -1,6 +1,6 @@
 export type Point = [number, number];
 export type Band = [number, number];
-export interface Ellipse { cx: number; cy: number; rx: number; ry: number }
+export interface Ellipse { cx: number; cy: number; rx: number; ry: number; angle?: number }
 export interface Eye {
   opening: Point[];
   roi: Point[];
@@ -61,6 +61,12 @@ export interface SoftBody {
   frequency: number;
   damping: number;
 }
+export interface RigGuide {
+  name: string;
+  kind: 'line' | 'ellipse';
+  points: Point[];
+  part?: string;
+}
 export interface Rig {
   version: 1;
   image: { width: number; height: number };
@@ -88,6 +94,7 @@ export interface Rig {
   hand?: Hand;
   skeleton?: Skeleton;
   softBody?: SoftBody;
+  guides?: RigGuide[];
   mesh: {
     baseCell: number;
     fine: { x0: number; x1: number; y0: number; y1: number; cell: number };

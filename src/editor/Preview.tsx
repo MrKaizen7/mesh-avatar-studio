@@ -12,6 +12,7 @@ const sliders = [
   { id: 'angleX', label: 'turn', min: -30, max: 30, def: 0 },
   { id: 'angleY', label: 'look', min: -30, max: 30, def: 0 },
   { id: 'angleZ', label: 'tilt', min: -30, max: 30, def: 0 },
+  { id: 'bodyAngleX', label: 'bodyLean', min: -10, max: 10, def: 0 },
   { id: 'EyeOpen', label: 'eyeOpen', min: 0, max: 1.25, def: 1 },
   { id: 'mouthOpen', label: 'mouthOpen', min: 0, max: 1, def: 0 },
   { id: 'bodyAngleZ', label: 'bodyTilt', min: -10, max: 10, def: 0 },
@@ -28,6 +29,9 @@ export function Preview({ projectKey, rig, assets, hasMouthSprites, onDrawMouth 
   const [revision, setRevision] = useState(0);
   const [idle, setIdle] = useState(true);
   const [stress, setStress] = useState(false);
+  const [bounceDemo, setBounceDemo] = useState(false);
+  const [bounceStrength, setBounceStrength] = useState(0.8);
+  const [softBodyOffset, setSoftBodyOffset] = useState(0);
   const [parameters, setParameters] = useState<Record<string, number>>({});
   const [lip, setLip] = useState<Lip>(null);
   const [text, setText] = useState('あいうえお');
@@ -78,11 +82,16 @@ export function Preview({ projectKey, rig, assets, hasMouthSprites, onDrawMouth 
     if (lip?.kind === 'hold') value.holdMouth(lip.vowel);
     if (lip?.kind === 'text') value.speakKana(lip.text, { speed: lip.speed, loop: lip.loop });
     value.advance(0);
-    if (!idle && !stress && !lip) return;
+    if (!idle && !stress && !lip && !bounceDemo) return;
     let raf = 0;
     const start = performance.now();
     let previous = start;
     const frame = (now: number) => {
+      if (bounceDemo && now - start >= 2000) {
+        setBounceDemo(false);
+        setSoftBodyOffset(current => Math.max(current, Math.hypot(...value.getSoftBodyOffset())));
+        if (!idle && !stress && !lip) return;
+      }
       if (stress) {
         const t = (now - start) / 1000;
         value.setParameters({ ...defaults, ...parameters,
@@ -92,6 +101,7 @@ export function Preview({ projectKey, rig, assets, hasMouthSprites, onDrawMouth 
       }
       value.advance(lip ? Math.min(0.05, Math.max(0, (now - previous) / 1000)) : 1 / 60);
       previous = now;
+      if (bounceDemo) setSoftBodyOffset(current => Math.max(current, Math.hypot(...value.getSoftBodyOffset())));
       if (lip) {
         const state = value.getLipSyncState();
         setLiveMouth(Math.round(state.open * 100) / 100);
@@ -101,7 +111,7 @@ export function Preview({ projectKey, rig, assets, hasMouthSprites, onDrawMouth 
     };
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
-  }, [rig, assets, idle, stress, parameters, revision, lip]);
+  }, [rig, assets, idle, stress, parameters, revision, lip, bounceDemo]);
   useEffect(() => {
     saveLighting(projectKey, lighting);
     avatar.current?.setLighting(lighting);
@@ -139,7 +149,19 @@ export function Preview({ projectKey, rig, assets, hasMouthSprites, onDrawMouth 
           </label>
         ))}
       </div>
-      <div className="pose-actions"><button className="reset-pose" onClick={() => { setParameters({}); setStress(false); setLip(null); }}>{t.reset}</button>
+      <div className="pose-actions">
+      <label className="bounce-strength">{t.bounceStrength}
+        <input type="range" min="0" max="1" step="0.05" value={bounceStrength} aria-label={t.bounceStrength}
+          onChange={event => setBounceStrength(Number(event.target.value))} />
+        <output>{bounceStrength.toFixed(2)}</output>
+      </label>
+      <button className="reset-pose" disabled={!rig.softBody?.regions.length || status !== 'ready'} onClick={() => {
+        avatar.current?.triggerSoftBodyBounce(bounceStrength);
+        setSoftBodyOffset(0);
+        setBounceDemo(true);
+      }}>{t.testSoftBody}</button>
+      {rig.softBody?.regions.length ? <output aria-live="polite" data-testid="softbody-offset">{t.softBodyOffset}: {softBodyOffset.toFixed(2)} px</output> : null}
+      <button className="reset-pose" onClick={() => { setParameters({}); setStress(false); setBounceDemo(false); setLip(null); }}>{t.reset}</button>
       <button className="sweep-button" title={t.sweepTip} onClick={() => setStress(current => !current)}>{stress ? t.stopSweep : t.sweep}</button></div>
       </div>
       <div className="lip-sync" id="lip-panel" role="tabpanel" aria-labelledby="lip-tab" hidden={tab !== 'lip'}>

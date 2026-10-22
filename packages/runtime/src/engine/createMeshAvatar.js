@@ -251,6 +251,8 @@ export async function createMeshAvatarImpl(canvas, options) {
     setSwayGain(g) { physics.gain = g; },
     setSoftBodyGain(g) { physics.setSoftBodyGain(g); },
     triggerSoftBodyBounce(strength = 1) { physics.triggerSoftBodyBounce(strength); },
+    /** @returns {[number, number]} */
+    getSoftBodyOffset() { return [...physics.out.softBody]; },
     /** Called with the motion id when a motion starts and with null when it ends. */
     onMotion(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     /** Advance the simulation by `sec` and draw (for tests / hidden tabs). */

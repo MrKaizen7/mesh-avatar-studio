@@ -36,7 +36,24 @@ export function revealFolder(path: string): Promise<void> {
   const command = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'explorer' : 'xdg-open';
   return new Promise((done, reject) => execFile(command, [path], error => error ? reject(error) : done()));
 }
-export function localProjectMiddleware(root: string, reveal = revealFolder, runner: Runner = runTool) {
+export type AutoRigHeadGuide = {
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+};
+export type AutoRigRunner = (projectName: string, headGuide?: AutoRigHeadGuide, stageOnly?: boolean) => Promise<{
+  status: string;
+  warnings?: string[];
+  rig?: unknown;
+}>;
+export function localProjectMiddleware(
+  root: string,
+  reveal = revealFolder,
+  runner: Runner = runTool,
+  autoRigger?: AutoRigRunner,
+) {
+  const activeAutoRigger = autoRigger ?? runAdapterAutoRig;
   root = resolve(root);
   const base = resolve(root, 'projects'), sample = resolve(root, 'samples/miko-qipao');
   const saving = new Set<string>();
@@ -50,6 +67,144 @@ export function localProjectMiddleware(root: string, reveal = revealFolder, runn
     if (req.headers['content-type']?.split(';')[0] !== 'application/json') throw new HttpError(400, 'Send application/json.');
     const bytes = await readBytes(req, limit);
     try { return JSON.parse(bytes.toString('utf8')); } catch { throw new HttpError(400, 'Invalid JSON.'); }
+  }
+  async function runAdapterAutoRig(projectName: string, headGuide?: AutoRigHeadGuide, stageOnly = false) {
+    const endpoint = process.env.THEA_MESH_AVATAR_ADAPTER_URL || 'http://127.0.0.1:8766';
+    const adapter = new URL(endpoint);
+    if (adapter.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(adapter.hostname)) {
+      throw new HttpError(500, 'THEA_MESH_AVATAR_ADAPTER_URL must be an HTTP loopback URL.');
+    }
+    let response: Response;
+    try {
+      response = await fetch(new URL('/api/auto-rig', adapter), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project: projectName,
+          ...(headGuide ? { head_guide: headGuide } : {}),
+          ...(stageOnly ? { stage_only: true } : {}),
+        }),
+        signal: AbortSignal.timeout(10 * 60 * 1000),
+      });
+    } catch (error) {
+      throw new HttpError(503, `THEA mesh-avatar adapter is unavailable at ${adapter.origin}: ${(error as Error).message}`);
+    }
+    let result: { status?: unknown; warnings?: unknown; error?: unknown; rig?: unknown };
+    try {
+      result = await response.json();
+    } catch (error) {
+      throw new HttpError(502, `THEA mesh-avatar adapter returned invalid JSON: ${(error as Error).message}`);
+    }
+    if (!response.ok) {
+      const message = typeof result.error === 'string' ? result.error : `HTTP ${response.status}`;
+      throw new HttpError(response.status === 400 ? 422 : response.status, `Auto-rig failed: ${message}`);
+    }
+    if (result.status !== 'ready_for_visual_review') {
+      throw new HttpError(502, 'THEA mesh-avatar adapter did not finish the auto-rig review.');
+    }
+    if (stageOnly && (!result.rig || typeof result.rig !== 'object' || Array.isArray(result.rig))) {
+      throw new HttpError(502, 'THEA mesh-avatar adapter did not return a rig suggestion.');
+    }
+    return {
+      status: result.status,
+      warnings: Array.isArray(result.warnings) ? result.warnings.filter((warning): warning is string => typeof warning === 'string') : [],
+      ...(result.rig ? { rig: result.rig } : {}),
+    };
+  }
+  async function createImageProject(body: unknown) {
+    const value = body as { image?: unknown; name?: unknown; rig?: unknown } | null;
+    if (!value || typeof value.image !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.image)) {
+      throw new HttpError(400, 'Expected a base64-encoded PNG image and rig.');
+    }
+    if (value.rig === undefined) throw new HttpError(400, 'Image loading requires an explicit starting rig; auto-rig is a separate action.');
+    const image = Buffer.from(value.image, 'base64');
+    const maxImageBytes = 50 * 1024 * 1024;
+    if (
+      image.length < 24 || image.length > maxImageBytes
+      || !image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    ) {
+      throw new HttpError(400, 'Image must be a PNG no larger than 50 MiB.');
+    }
+    const width = image.readUInt32BE(16), height = image.readUInt32BE(20);
+    if (!width || !height || width > 16_384 || height > 16_384 || width * height > 40_000_000) {
+      throw new HttpError(400, 'Image dimensions must be at most 16,384 px per side and 40 megapixels total.');
+    }
+    if (value.rig !== undefined) {
+      const errors = validateRig(value.rig);
+      if (errors.length) throw new HttpError(400, `Invalid rig: ${errors.join(', ')}`);
+      const rig = value.rig as { image?: { width?: number; height?: number } };
+      if (rig.image?.width !== width || rig.image?.height !== height) {
+        throw new HttpError(400, 'The source image dimensions do not match the loaded rig.');
+      }
+    }
+    const requestedName = typeof value.name === 'string' ? value.name : 'avatar';
+    let stem = requestedName.normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^A-Za-z0-9_-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .replace(/^[^A-Za-z0-9]+/, '')
+      .slice(0, 64) || 'avatar';
+    if (stem === SAMPLE || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)) stem = `avatar-${stem}`;
+    await folder(SAMPLE);
+    await mkdir(base, { recursive: true });
+    if (await realpath(base) !== base) throw new HttpError(400, 'Project root cannot redirect elsewhere.');
+    let name = stem, path = resolve(base, name), created = false;
+    for (let index = 1; ; index++) {
+      try {
+        await mkdir(path);
+        created = true;
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        name = `${stem.slice(0, 72 - String(index).length)}-${index}`;
+        path = resolve(base, name);
+      }
+    }
+    try {
+      saving.add(path);
+      await cp(sample, path, {
+        recursive: true,
+        force: false,
+        filter: async source => {
+          if ((await lstat(source)).isSymbolicLink()) throw new HttpError(400, 'Sample contains redirected files.');
+          return true;
+        },
+      });
+      await checked(base, path);
+      await writeFile(resolve(path, 'source.png'), image);
+      if (value.rig !== undefined) {
+        await writeFile(resolve(path, 'rig.json'), `${JSON.stringify(value.rig, null, 2)}\n`);
+      }
+      const manifestPath = resolve(path, 'avatar.json');
+      const manifest = await exists(manifestPath)
+        ? JSON.parse(await readFile(manifestPath, 'utf8'))
+        : { format: 'mesh-avatar', version: 1 };
+      manifest.name = name;
+      await writeFile(resolve(path, 'avatar.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      let layerBuildError: string | undefined;
+      try {
+        await projectJob(root, path, 'build-layers', [], runner);
+      } catch (error) {
+        if (error instanceof JobError) {
+          layerBuildError = `${error.code}: ${error.log}`;
+        } else {
+          const failure = fileSystemError(root, error, relative(root, path));
+          if (!failure || !['EPERM', 'EACCES', 'EROFS', 'EBUSY'].includes(failure.body.code)) throw error;
+          layerBuildError = failure.body.error;
+        }
+      }
+      const project = await info(name);
+      if (!project) throw new HttpError(500, 'Could not create the uploaded image project.');
+      return { ...project, project, warnings: [], layerBuildError };
+    } catch (error) {
+      if (created) {
+        await checked(base, path);
+        await rm(path, { recursive: true, force: true });
+      }
+      throw error;
+    } finally {
+      saving.delete(path);
+    }
   }
   async function readSelected(path: string, names: Set<string>) {
     const files: Record<string, Uint8Array> = Object.create(null);
@@ -197,6 +352,10 @@ export function localProjectMiddleware(root: string, reveal = revealFolder, runn
         return value;
       });
       if (parts.length === 1 && parts[0] === 'context' && req.method === 'GET') { json(200, { rootPath: root, displayRootPath: displayPath(root) }); return; }
+      if (parts.length === 1 && parts[0] === 'create-image-project' && req.method === 'POST') {
+        const body = await readBody(req, 70 * 1024 * 1024);
+        json(201, await createImageProject(body)); return;
+      }
       if (parts.length === 1 && parts[0] === 'reveal' && req.method === 'POST') { await reveal(root); json(200, { path: root }); return; }
       if (parts.length === 1 && parts[0] === 'export' && req.method === 'POST') {
         const body = await readBody(req);
@@ -281,6 +440,35 @@ export function localProjectMiddleware(root: string, reveal = revealFolder, runn
       if (parts.length < 3) throw new HttpError(404, 'Not found.');
       errorPath = parts[1] === SAMPLE ? 'samples/miko-qipao' : `projects/${parts[1]}`;
       const name = parts[1], path = await folder(name), tail = parts.slice(2);
+      if (req.method === 'POST' && tail.length === 1 && tail[0] === 'auto-rig') {
+        if (name === SAMPLE) throw new HttpError(403, 'The sample is read-only. Load the image into a project before requesting auto-rig.');
+        if (!await sourceFile(path)) throw new HttpError(403, 'Source image is missing. This avatar is playback-only.');
+        if (saving.has(path)) throw new HttpError(409, 'A project operation is already in progress.');
+        const body = await readBody(req);
+        const head = body?.head_guide;
+        if (!head || typeof head !== 'object' || Array.isArray(head)
+          || !['cx', 'cy', 'rx', 'ry'].every(key => Number.isFinite(head[key]))
+          || head.rx <= 0 || head.ry <= 0) {
+          throw new HttpError(400, 'Expected a valid head_guide with finite center and positive radii.');
+        }
+        const result = await activeAutoRigger(name, {
+          cx: head.cx,
+          cy: head.cy,
+          rx: head.rx,
+          ry: head.ry,
+        }, true);
+        if (result.status !== 'ready_for_visual_review' || !result.rig || typeof result.rig !== 'object' || Array.isArray(result.rig)) {
+          throw new HttpError(502, 'Auto-rig did not return a valid suggestion.');
+        }
+        if (Buffer.byteLength(JSON.stringify(result.rig), 'utf8') > 1024 * 1024) {
+          throw new HttpError(502, 'Auto-rig suggestion exceeds 1 MiB.');
+        }
+        json(200, {
+          rig: result.rig,
+          warnings: Array.isArray(result.warnings) ? result.warnings.filter((warning): warning is string => typeof warning === 'string') : [],
+        });
+        return;
+      }
       if (req.method === 'POST' && tail.length === 1 && tail[0] === 'reveal') {
         await reveal(path); json(200, { path }); return;
       }

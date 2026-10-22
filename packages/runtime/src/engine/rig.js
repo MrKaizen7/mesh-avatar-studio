@@ -25,7 +25,14 @@ export const PARAMS = [
 /** @param {import('../rig/types').Rig} rig */
 export function createRig(rig) {
   const IMG = { w: rig.image.width, h: rig.image.height };
-  const gaussian = (x, y, a) => a ? Math.exp(-(((x - a.cx) / a.rx) ** 2 + ((y - a.cy) / a.ry) ** 2)) : 0;
+  const gaussian = (x, y, a) => {
+    if (!a) return 0;
+    const angle = a.angle ?? 0;
+    const dx = x - a.cx, dy = y - a.cy;
+    const localX = dx * Math.cos(angle) + dy * Math.sin(angle);
+    const localY = -dx * Math.sin(angle) + dy * Math.cos(angle);
+    return Math.exp(-((localX / a.rx) ** 2 + (localY / a.ry) ** 2));
+  };
   // ---- face features ----
   // Eye openings come from layers.json ("eyes", written when the layers were cut): the top / bottom edge of
   // the visible eye white + iris, sampled at EYE_N evenly spaced columns from corner to corner.

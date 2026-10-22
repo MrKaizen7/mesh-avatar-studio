@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Point, Rig } from 'mesh-avatar';
-import { buildOverlay, changeVertex, imagePoint, moveHandle, nearestEdge, nearestHandle, screen, type DrawTool, type Handle, type Viewport } from './model';
+import { buildOverlay, changeVertex, imagePoint, moveHandle, moveHandles, nearestEdge, nearestHandle, screen, type DrawTool, type Handle, type Viewport } from './model';
 import { useI18n, type PartGroup } from './i18n';
 import { PART_COLORS } from './parts';
 import { readPreference, savePreference } from './preferences';
@@ -11,7 +11,10 @@ interface Props {
   sourceUrl: string;
   visible: string[];
   selected: string | null;
+  selectedHandles: string[];
+  selectionMode: boolean;
   onSelect: (path: string) => void;
+  onSelectedHandlesChange: (handles: string[]) => void;
   onChange: (rig: Rig) => void;
   drawTool?: DrawTool | null;
   onDraw?: (tool: DrawTool, start: Point, end: Point) => void;
@@ -19,7 +22,7 @@ interface Props {
   onEnd?: () => void;
   focusRequest?: { group: string; id: number };
 }
-export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onChange, drawTool, onDraw, onBegin, onEnd, focusRequest }: Props) {
+export function EditorCanvas({ rig, sourceUrl, visible, selected, selectedHandles, selectionMode, onSelect, onSelectedHandlesChange, onChange, drawTool, onDraw, onBegin, onEnd, focusRequest }: Props) {
   const { t, title } = useI18n();
   const canvas = useRef<HTMLCanvasElement>(null);
   const source = useRef<HTMLImageElement | null>(null);
@@ -38,14 +41,16 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
   const [hover, setHover] = useState<{ handle: Handle; point: Point } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [drawPreview, setDrawPreview] = useState<{ tool: DrawTool; start: Point; end: Point } | null>(null);
-  const drag = useRef<{ handle?: Handle; drawTool?: DrawTool; drawStart?: Point; rig: Rig; start: Point; view: Viewport; offset: Point } | null>(null);
+  const [selectionPreview, setSelectionPreview] = useState<{ start: Point; end: Point } | null>(null);
+  const drag = useRef<{ handle?: Handle; selectedHandles?: Handle[]; drawTool?: DrawTool; drawStart?: Point; marquee?: boolean; rig: Rig; start: Point; view: Viewport; offset: Point } | null>(null);
   const overlay = useMemo(() => buildOverlay(rig), [rig]);
   const handles = overlay.handles.filter(h => visible.includes(h.group));
   const shapes = overlay.shapes.filter(s => visible.includes(s.group));
   const focusGroup = selected?.split('.')[0] ?? '';
   const interactiveHandles = handles.filter(h => !focusGroup || h.group === focusGroup);
   const interactiveShapes = shapes.filter(s => !focusGroup || s.group === focusGroup);
-  const hint = drawTool ? t.drawHint : !selected ? t.pickHint : interactiveShapes.some(s => s.editable) ? t.lineHint : interactiveHandles.length ? t.dragHint : t.noDots;
+  const hint = drawTool === 'strand' ? t.strandHint : drawTool === 'guideLine' ? t.guideLineHint
+    : drawTool ? t.drawHint : selectionMode ? t.selectionModeHint : !selected ? t.pickHint : interactiveShapes.some(s => s.editable) ? t.lineHint : interactiveHandles.length ? t.dragHint : t.noDots;
   useEffect(() => {
     setImageReady(false); source.current = null;
     const image = new Image();
@@ -160,28 +165,54 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
       context.stroke();
     }
     for (const handle of handles) {
+      if (!selectedHandles.includes(handle.id)) continue;
+      const [x, y] = screen(handle.point, view);
+      context.beginPath();
+      context.arc(x, y, 8, 0, Math.PI * 2);
+      context.strokeStyle = '#111827';
+      context.lineWidth = 2;
+      context.stroke();
+    }
+    for (const handle of handles) {
       const [x, y] = screen(handle.point, view);
       const active = focusGroup === handle.group;
       context.globalAlpha = !focusGroup ? 0.6 : active ? 1 : 0.2;
       context.beginPath();
-      context.arc(x, y, active ? 5 : 3.5, 0, Math.PI * 2);
-      context.fillStyle = PART_COLORS[handle.group as PartGroup];
+      if (handle.ellipseTransform?.mode === 'scale') {
+        context.rect(x - 5, y - 5, 10, 10);
+        context.fillStyle = '#ffffff';
+      } else {
+        context.arc(x, y, handle.ellipseTransform?.mode === 'rotate' ? 6 : active ? 5 : 3.5, 0, Math.PI * 2);
+        context.fillStyle = handle.ellipseTransform?.mode === 'rotate' ? '#ffffff' : PART_COLORS[handle.group as PartGroup];
+      }
       context.fill();
-      context.strokeStyle = '#ffffff';
-      context.lineWidth = 1;
+      context.strokeStyle = PART_COLORS[handle.group as PartGroup];
+      context.lineWidth = handle.ellipseTransform ? 2 : 1;
       context.stroke();
+      if (handle.ellipseTransform?.mode === 'rotate') {
+        context.beginPath();
+        context.arc(x, y, 2, 0, Math.PI * 2);
+        context.fillStyle = PART_COLORS[handle.group as PartGroup];
+        context.fill();
+      }
     }
     if (drawPreview) {
       const start = screen(drawPreview.start, view), end = screen(drawPreview.end, view);
       context.save();
       context.globalAlpha = 0.9;
-      context.strokeStyle = PART_COLORS[drawPreview.tool === 'strand' ? 'strands' : 'body'];
+      const previewGroup: PartGroup = drawPreview.tool === 'strand' ? 'strands'
+        : drawPreview.tool === 'accessory' ? 'accessories'
+          : drawPreview.tool === 'bunL' || drawPreview.tool === 'bunR' ? 'buns'
+          : drawPreview.tool.startsWith('guide') ? 'guides' : 'body';
+      context.strokeStyle = PART_COLORS[previewGroup];
       context.lineWidth = 2;
       context.setLineDash([6, 4]);
       context.beginPath();
-      if (drawPreview.tool === 'strand') {
+      if (drawPreview.tool === 'strand' || drawPreview.tool === 'guideLine') {
         context.moveTo(start[0], start[1]);
         context.lineTo(end[0], end[1]);
+      } else if (drawPreview.tool === 'accessory') {
+        context.rect(start[0], start[1], end[0] - start[0], end[1] - start[1]);
       } else {
         context.ellipse((start[0] + end[0]) / 2, (start[1] + end[1]) / 2,
           Math.max(2, Math.abs(end[0] - start[0]) / 2), Math.max(2, Math.abs(end[1] - start[1]) / 2), 0, 0, Math.PI * 2);
@@ -189,8 +220,19 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
       context.stroke();
       context.restore();
     }
+    if (selectionPreview) {
+      const start = selectionPreview.start, end = selectionPreview.end;
+      context.save();
+      context.fillStyle = 'rgba(37, 99, 235, 0.08)';
+      context.strokeStyle = '#2563eb';
+      context.setLineDash([5, 4]);
+      context.lineWidth = 1;
+      context.fillRect(start[0], start[1], end[0] - start[0], end[1] - start[1]);
+      context.strokeRect(start[0], start[1], end[0] - start[0], end[1] - start[1]);
+      context.restore();
+    }
     context.globalAlpha = 1;
-  }, [rig, handles, shapes, selected, focusGroup, size, imageReady, view, drawPreview]);
+  }, [rig, handles, shapes, selected, selectedHandles, focusGroup, size, imageReady, view, drawPreview, selectionPreview]);
   const local = (event: { clientX: number; clientY: number }): Point => {
     const rect = canvas.current!.getBoundingClientRect();
     return [event.clientX - rect.left, event.clientY - rect.top];
@@ -204,7 +246,9 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
         data-dimmed-groups={focusGroup ? visible.filter(g => g !== focusGroup).join(',') : ''}
         data-inactive-opacity={focusGroup ? '0.2' : '0.6'}
         data-draw-tool={drawTool ?? ''}
-        style={{ cursor: drawTool ? 'crosshair' : dragging ? 'grabbing' : 'grab' }}
+        data-selection-count={selectedHandles.length}
+        data-selection-mode={selectionMode}
+        style={{ cursor: drawTool || selectionMode ? 'crosshair' : dragging ? 'grabbing' : 'grab' }}
         onKeyDown={event => { if (event.code === 'Space') { event.preventDefault(); space.current = true; } }}
         onKeyUp={event => { if (event.code === 'Space') space.current = false; }}
         onBlur={() => { space.current = false; }}
@@ -215,6 +259,9 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
           const point = local(event);
           if (event.button === 1 || space.current) {
             drag.current = { rig, start: point, view: { ...viewRef.current }, offset: [0, 0] };
+          } else if (event.button === 0 && (selectionMode || event.shiftKey) && !drawTool) {
+            drag.current = { rig, start: point, view: { ...viewRef.current }, offset: [0, 0], marquee: true };
+            setSelectionPreview({ start: point, end: point });
           } else if (event.button === 0 && drawTool) {
             const start = imagePoint(point, viewRef.current);
             drag.current = { rig, start: point, view: { ...viewRef.current }, offset: [0, 0], drawTool, drawStart: start };
@@ -231,7 +278,11 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
                 return;
               }
               const origin = imagePoint(point, view);
-              drag.current = { handle, rig, start: point, view: { ...viewRef.current }, offset: [handle.point[0] - origin[0], handle.point[1] - origin[1]] };
+              const movingSelection = selectedHandles.includes(handle.id)
+                ? interactiveHandles.filter(item => selectedHandles.includes(item.id) && item.yPath && !item.radius && !item.ellipseTransform)
+                : [];
+              if (!movingSelection.length) onSelectedHandlesChange([]);
+              drag.current = { handle, selectedHandles: movingSelection.length > 1 ? movingSelection : undefined, rig, start: point, view: { ...viewRef.current }, offset: [handle.point[0] - origin[0], handle.point[1] - origin[1]] };
               onBegin?.();
             }
           } else return;
@@ -246,8 +297,13 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
             return;
           }
           const point = local(event), current = drag.current;
-          if (current.drawTool && current.drawStart) setDrawPreview({ tool: current.drawTool, start: current.drawStart, end: imagePoint(point, current.view) });
+          if (current.marquee) setSelectionPreview({ start: current.start, end: point });
+          else if (current.drawTool && current.drawStart) setDrawPreview({ tool: current.drawTool, start: current.drawStart, end: imagePoint(point, current.view) });
           else if (!current.handle) setViewport({ ...current.view, x: current.view.x + point[0] - current.start[0], y: current.view.y + point[1] - current.start[1] });
+          else if (current.selectedHandles) {
+            const from = imagePoint(current.start, current.view), to = imagePoint(point, current.view);
+            onChange(moveHandles(current.rig, current.selectedHandles, to[0] - from[0], to[1] - from[1]));
+          }
           else {
             const target = imagePoint(point, view);
             onChange(moveHandle(current.rig, current.handle, [target[0] + current.offset[0], target[1] + current.offset[1]]));
@@ -256,17 +312,29 @@ export function EditorCanvas({ rig, sourceUrl, visible, selected, onSelect, onCh
         onPointerLeave={() => setHover(null)}
         onPointerUp={event => {
           const current = drag.current;
-          if (current?.drawTool && current.drawStart) {
+          if (current?.marquee) {
+            const end = local(event);
+            const left = Math.min(current.start[0], end[0]), right = Math.max(current.start[0], end[0]);
+            const top = Math.min(current.start[1], end[1]), bottom = Math.max(current.start[1], end[1]);
+            const selected = interactiveHandles.filter(handle => handle.yPath && !handle.radius && !handle.ellipseTransform).filter(handle => {
+              const [x, y] = screen(handle.point, current.view);
+              return x >= left && x <= right && y >= top && y <= bottom;
+            });
+            onSelectedHandlesChange(selected.map(handle => handle.id));
+            setSelectionPreview(null);
+          } else if (current?.drawTool && current.drawStart) {
             const end = imagePoint(local(event), current.view);
-            if (Math.hypot(end[0] - current.drawStart[0], end[1] - current.drawStart[1]) >= 4)
+            const dx = Math.abs(end[0] - current.drawStart[0]), dy = Math.abs(end[1] - current.drawStart[1]);
+            if (current.drawTool === 'guideEllipse' || current.drawTool === 'accessory'
+              || current.drawTool === 'bunL' || current.drawTool === 'bunR' ? dx >= 4 && dy >= 4 : Math.hypot(dx, dy) >= 4)
               onDraw?.(current.drawTool, current.drawStart, end);
             onEnd?.();
           } else if (current?.handle) onEnd?.();
-          drag.current = null; setDrawPreview(null); setDragging(false);
+          drag.current = null; setDrawPreview(null); setSelectionPreview(null); setDragging(false);
         }}
         onPointerCancel={() => {
           if (drag.current?.drawTool || drag.current?.handle) onEnd?.();
-          drag.current = null; setDrawPreview(null); setDragging(false);
+          drag.current = null; setDrawPreview(null); setSelectionPreview(null); setDragging(false);
         }}
         onDoubleClick={event => {
           const edge = nearestEdge(interactiveShapes, local(event), view);

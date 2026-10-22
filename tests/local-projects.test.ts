@@ -7,7 +7,8 @@ import { EventEmitter } from 'node:events';
 import { createServer, resolveConfig, type ViteDevServer } from 'vite';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import fixture from '../samples/miko-qipao/rig.json';
-import { localProjectMiddleware, localProjectsPlugin } from '../src/server/local-projects';
+import { localProjectMiddleware, localProjectsPlugin, type AutoRigRunner } from '../src/server/local-projects';
+import type { Runner, Tool } from '../src/server/project-jobs';
 
 const failure = vi.hoisted(() => ({ operation: '', path: '', code: '' }));
 vi.mock('node:fs/promises', async importOriginal => {
@@ -35,7 +36,7 @@ beforeEach(async () => {
 });
 afterEach(async () => { failure.operation = ''; vi.useRealTimers(); await rm(root, { recursive: true, force: true }); });
 
-async function call(path: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}, reveal = vi.fn(async (_path: string) => { void _path; })) {
+async function call(path: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}, reveal = vi.fn(async (_path: string) => { void _path; }), runner?: Runner, autoRigger?: AutoRigRunner) {
   const request = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]) as IncomingMessage;
   request.url = path; request.method = method;
   request.headers = { host: '127.0.0.1:5173', 'content-type': 'application/json', ...headers };
@@ -44,7 +45,7 @@ async function call(path: string, method = 'GET', body?: unknown, headers: Recor
     writeHead(status: number, values: Record<string, string>) { result.status = status; result.headers = values; },
     end(value: string | Buffer) { result.body = String(value); },
   } as unknown as ServerResponse;
-  await localProjectMiddleware(root, reveal)(request, response, () => { result.status = 404; });
+  await localProjectMiddleware(root, reveal, runner, autoRigger)(request, response, () => { result.status = 404; });
   return result;
 }
 
@@ -104,6 +105,76 @@ test('validates before writing and keeps exactly the preceding rig in a one-gene
   expect((await call('/__studio/projects/nova/rig', 'POST', { version: 1 })).status).toBe(400);
   expect(JSON.parse(await readFile(resolve(root, 'projects/nova/rig.json'), 'utf8'))).toEqual(second);
   expect((await call('/__studio/projects/sample-miko-qipao/rig', 'POST', first)).status).toBe(403);
+});
+
+test('creates a sanitized project from an uploaded PNG without requesting auto-rig', async () => {
+  const image = Buffer.alloc(24);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(image);
+  image.writeUInt32BE(fixture.image.width, 16);
+  image.writeUInt32BE(fixture.image.height, 20);
+  const runner = vi.fn(async (_root: string, _project: string, _tool: Tool) => '');
+  const autoRigger = vi.fn(async () => ({ status: 'ready_for_visual_review' }));
+  const result = await call('/__studio/create-image-project', 'POST', {
+    image: image.toString('base64'),
+    rig: fixture,
+    name: '../../Rin portrait',
+  }, {}, undefined, runner, autoRigger);
+
+  expect(result.status).toBe(201);
+  const project = JSON.parse(result.body);
+  expect(project.name).toBe('Rin-portrait');
+  expect(project.relativePath).toBe(`projects/${project.name}`);
+  expect(await readFile(resolve(root, project.relativePath, 'source.png'))).toEqual(image);
+  expect(JSON.parse(await readFile(resolve(root, project.relativePath, 'rig.json'), 'utf8'))).toEqual(fixture);
+  expect(runner).toHaveBeenCalledTimes(1);
+  expect(runner.mock.calls[0][0]).toBe(root);
+  expect(runner.mock.calls[0][1]).toMatch(/projects[\\/]\.studio-job-/);
+  expect(runner.mock.calls[0][2]).toBe('build-layers');
+  expect(autoRigger).not.toHaveBeenCalled();
+
+  const mismatched = structuredClone(fixture);
+  mismatched.image.width += 1;
+  const rejected = await call('/__studio/create-image-project', 'POST', {
+    image: image.toString('base64'), rig: mismatched, name: 'bad-project',
+  }, {}, undefined, runner);
+  expect(rejected.status).toBe(400);
+  expect(await readFile(resolve(root, 'projects/bad-project')).catch(() => null)).toBeNull();
+});
+
+test('stages an auto-rig suggestion with the current head guide and leaves project files unchanged', async () => {
+  const currentRig = await readFile(resolve(root, 'projects/nova/rig.json'), 'utf8');
+  const originalBase = await readFile(resolve(root, 'projects/nova/built/base.png'));
+  const suggestion = structuredClone(fixture);
+  suggestion.head.cx += 25;
+  const autoRigger = vi.fn(async (
+    _name: string,
+    _headGuide?: { cx: number; cy: number; rx: number; ry: number },
+    _stageOnly?: boolean,
+  ) => ({
+    status: 'ready_for_visual_review',
+    warnings: ['Review the detected landmarks.'],
+    rig: suggestion,
+  }));
+  const response = await call('/__studio/projects/nova/auto-rig', 'POST', {
+    head_guide: { cx: 620, cy: 420, rx: 100, ry: 130 },
+  }, {}, undefined, undefined, autoRigger);
+
+  expect(response.status).toBe(200);
+  expect(JSON.parse(response.body)).toEqual({
+    rig: suggestion,
+    warnings: ['Review the detected landmarks.'],
+  });
+  expect(autoRigger).toHaveBeenCalledExactlyOnceWith('nova', { cx: 620, cy: 420, rx: 100, ry: 130 }, true);
+  expect(await readFile(resolve(root, 'projects/nova/rig.json'), 'utf8')).toBe(currentRig);
+  expect(await readFile(resolve(root, 'projects/nova/built/base.png'))).toEqual(originalBase);
+
+  expect((await call('/__studio/projects/nova/auto-rig', 'POST', {
+    head_guide: { cx: 0, cy: 0, rx: 0, ry: 1 },
+  }, {}, undefined, undefined, autoRigger)).status).toBe(400);
+  expect((await call('/__studio/projects/sample-miko-qipao/auto-rig', 'POST', {
+    head_guide: { cx: 1, cy: 1, rx: 1, ry: 1 },
+  }, {}, undefined, undefined, autoRigger)).status).toBe(403);
+  expect(autoRigger).toHaveBeenCalledOnce();
 });
 
 test('refuses redirected rig writes and cross-origin operations, and reveals the validated folder', async () => {

@@ -8,9 +8,11 @@ y down. Coordinates, radii, lengths, grid spacing and bands are **source pixels*
 **radians**, not the degrees used by the pose sliders. All numbers must be finite. Ellipse
 radii and mesh cell sizes must be positive. Mesh cell sizes and fine-mesh rectangle
 coordinates must be integers. Accessory boxes must be integer rectangles inside the image. A band is `[start, end]` with `start < end`.
-Ellipses are smooth influence regions, not hard cut-out boundaries.
+Ellipses are smooth influence regions, not hard cut-out boundaries. Ellipse `angle` is optional
+and is measured in radians; it rotates the influence region and its overlay controls without
+changing the source artwork.
 
-Only `buns`, `strands`, `accessories`, `hand`, `skeleton`, `softBody` and `view.gazeCenter` are optional. Omit absent
+Only `buns`, `strands`, `accessories`, `hand`, `skeleton`, `softBody`, `guides` and `view.gazeCenter` are optional. Omit absent
 optional groups. Required regions must still be placed even if their animation will be small.
 The initial draft has empty eye polygons and is intentionally invalid until they are traced.
 See [agent-guide.md](agent-guide.md) for the process and [rig-mapping.md](rig-mapping.md) for
@@ -50,8 +52,13 @@ the engine mapping. Do not copy the example illustration's coordinates into a ne
 | `softBody.maxOffset` | Maximum secondary-motion displacement, px. |
 | `softBody.frequency` | Spring frequency, Hz; must not exceed 12. |
 | `softBody.damping` | Damping ratio in `(0, 2]`; higher values settle more quickly. |
+| `softBody` runtime behavior | A damped 2D spring follows acceleration of the head/body-transformed chest anchor. `gain` scales that inertial response; it is not a gravity, collision, or anatomical tissue simulation. The preview's bounce trigger adds a vertical velocity impulse with a user-selected strength from 0 to 1. |
 | `skeleton.joints[*]` | Pose-guide joint name, image-space `[x,y]` position and visibility confidence, 0–1. |
 | `skeleton.bones[*]` | Names of two distinct joints connected by a pose-guide bone; this metadata does not animate limbs. |
+| `guides[*].name` | Unique label for a manual annotation, such as `left thigh`. |
+| `guides[*].kind` | `line` or `ellipse`; the annotation's display geometry. |
+| `guides[*].points` | Two image-space `[x,y]` points defining the line endpoints or opposite ellipse corners. Points may lie outside the image, within the validator's distance limit. |
+| `guides[*].part` | Optional part key the annotation is associated with, such as `hand` or `buns`; this association is metadata, not a runtime deformation binding. |
 | `face.nose.cx` | Horizontal centre, px; Nose influence ellipse, px; centre on nose tip, radii around bridge/tip region. |
 | `face.nose.cy` | Vertical centre, px; Nose influence ellipse, px; centre on nose tip, radii around bridge/tip region. |
 | `face.nose.rx` | Horizontal influence radius, px; Nose influence ellipse, px; centre on nose tip, radii around bridge/tip region. |

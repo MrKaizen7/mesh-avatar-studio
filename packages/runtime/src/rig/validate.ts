@@ -37,8 +37,8 @@ const object = (fields: Record<string, Check>, optional: string[] = []): Check =
     check(record[key], `${p}.${key}`, e);
   }
 };
-const ellipseFields = { cx: number, cy: number, rx: positive, ry: positive };
-const ellipse = object(ellipseFields);
+const ellipseFields = { cx: number, cy: number, rx: positive, ry: positive, angle: number };
+const ellipse = object(ellipseFields, ['angle']);
 const polygon = array(point, 3);
 const line = array(point, 2);
 const unit: Check = (v, p, e) => {
@@ -57,12 +57,12 @@ const schema = (draft: boolean) => object({
   version: (v, p, e) => { if (v !== 1) e.push(`${p}: only version 1 is supported`); },
   image: object({ width: integer, height: integer }),
   head: object({ ...ellipseFields, shiftX: number, shiftY: number, pivotX: number,
-    pivotY: number, maxRoll: number, weightBand: band, turnBand: band }),
+    pivotY: number, maxRoll: number, weightBand: band, turnBand: band }, ['angle']),
   body: object({ pivotX: number, pivotY: number, maxRoll: number, breathBand: band,
     rollBand: band, chest: ellipse, shoulders: array(ellipse) }),
   face: object({ nose: ellipse, mouth: ellipse, eyeA: ellipse, eyeB: ellipse,
-    earL: ellipse, earR: ellipse, brow: object({ ...ellipseFields, band }),
-    jaw: object({ ...ellipseFields, band }) }),
+    earL: ellipse, earR: ellipse, brow: object({ ...ellipseFields, band }, ['angle']),
+    jaw: object({ ...ellipseFields, band }, ['angle']) }),
   buns: object({ bunL: ellipse, bunR: ellipse }, ['bunL', 'bunR']),
   eyes: array(object({ opening: polygon, roi: polygon, x0: number, x1: number,
     top: array(number, 24, 24), bot: array(number, 24, 24) }, draft ? ['x0', 'x1', 'top', 'bot'] : []), 2, 2),
@@ -87,11 +87,14 @@ const schema = (draft: boolean) => object({
     frequency,
     damping,
   }),
+  guides: array(object({ name: string, kind: (v, p, e) => {
+    if (v !== 'line' && v !== 'ellipse') e.push(`${p}: expected line or ellipse`);
+  }, points: array(point, 2, 2), part: string }, ['part'])),
   mesh: object({ baseCell: integer, fine: object({ x0: wholeNumber, x1: wholeNumber,
     y0: wholeNumber, y1: wholeNumber, cell: integer }), handCell: integer,
     tasselCell: integer, eyeBallCell: integer, eyeCell: integer, spriteCell: integer }),
   view: object({ padTop: number, padSide: number, gazeCenter: point }, ['gazeCenter']),
-}, ['buns', 'strands', 'accessories', 'hand', 'skeleton', 'softBody']);
+}, ['buns', 'strands', 'accessories', 'hand', 'skeleton', 'softBody', 'guides']);
 
 export function validateRig(value: unknown, options: { draft?: boolean } = {}): string[] {
   const errors: string[] = [];
@@ -122,6 +125,21 @@ export function validateRig(value: unknown, options: { draft?: boolean } = {}): 
     if (accessory.split <= 0 || accessory.split >= 1) errors.push(`rig.accessories[${i}].split: must be strictly between 0 and 1`);
     if (accessory.pivot.every((n, k) => n === accessory.tip[k])) errors.push(`rig.accessories[${i}].tip: must differ from pivot`);
     if (accessory.box[0] >= accessory.box[2] || accessory.box[1] >= accessory.box[3]) errors.push(`rig.accessories[${i}].box: rectangle must have positive area`);
+  }
+  const guideNames = new Set<string>();
+  for (const [i, guide] of (rig.guides ?? []).entries()) {
+    if (!guide.name.trim()) errors.push(`rig.guides[${i}].name: must not be empty`);
+    if (guideNames.has(guide.name)) errors.push(`rig.guides[${i}].name: must be unique`);
+    guideNames.add(guide.name);
+    if (guide.part !== undefined && !guide.part.trim()) errors.push(`rig.guides[${i}].part: expected a non-empty string`);
+    if (guide.kind === 'line' && guide.points[0].every((n, axis) => n === guide.points[1][axis]))
+      errors.push(`rig.guides[${i}].points: line endpoints must differ`);
+    if (guide.kind === 'ellipse' && guide.points[0].some((n, axis) => n === guide.points[1][axis]))
+      errors.push(`rig.guides[${i}].points: ellipse must have positive width and height`);
+    for (const [j, p] of guide.points.entries()) {
+      if (p.some(n => Math.abs(n) > Math.max(rig.image.width, rig.image.height) * 4))
+        errors.push(`rig.guides[${i}].points[${j}]: guide point is too far from the image`);
+    }
   }
   if (rig.skeleton) {
     const names = new Set<string>();

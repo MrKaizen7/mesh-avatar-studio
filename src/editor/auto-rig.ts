@@ -1,9 +1,9 @@
 import { FaceLandmarker, FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
-import type { Rig, Point, Ellipse, Skeleton } from 'mesh-avatar';
+import type { Rig, Point, Ellipse, Eye, Skeleton } from 'mesh-avatar';
 
 type Landmark = { x: number; y: number; visibility?: number; presence?: number };
 type FaceBounds = { left: number; right: number; top: number; bottom: number };
-type AutoRigDraft = Omit<Rig, 'eyes'> & {
+export type AutoRigDraft = Omit<Rig, 'eyes'> & {
   eyes: { opening: Point[]; roi: Point[] }[];
 };
 type AutoRigResult = {
@@ -16,11 +16,14 @@ type AutoRigResult = {
   poseDetected: boolean;
   skeletonJointCount: number;
 };
+export type AutoRigStage = 'loadingModel' | 'detectingFace' | 'detectingPose';
 export type AnimeFaceDetection = {
   bbox: [number, number, number, number, number];
   keypoints: [number, number, number][];
 };
 
+const EYE_CURVE_SAMPLES = 24;
+const MAX_INFERENCE_DIMENSION = 1024;
 const POSE_JOINT_NAMES = [
   'nose', 'leftEyeInner', 'leftEye', 'leftEyeOuter', 'rightEyeInner', 'rightEye',
   'rightEyeOuter', 'leftEar', 'rightEar', 'mouthLeft', 'mouthRight',
@@ -77,6 +80,20 @@ function bounds(points: Point[]): FaceBounds {
     bottom: Math.max(...points.map(([, y]) => y)),
   };
 }
+export function selectFaceForHeadGuide(faces: FaceBounds[], head: Rig['head']): number {
+  if (!faces.length) throw new Error('At least one detected face is required.');
+  const guideWidth = Math.max(1, head.rx * 2), guideHeight = Math.max(1, head.ry * 2);
+  const score = (face: FaceBounds) => {
+    const centerX = (face.left + face.right) / 2;
+    const centerY = (face.top + face.bottom) / 2;
+    const width = Math.max(1, face.right - face.left);
+    const dx = (centerX - head.cx) / guideWidth;
+    const dy = (centerY - head.cy) / guideHeight;
+    const sizeDifference = Math.log(width / guideWidth);
+    return dx * dx + dy * dy + 0.25 * sizeDifference * sizeDifference;
+  };
+  return faces.reduce((best, face, index) => score(face) < score(faces[best]) ? index : best, 0);
+}
 
 function ellipse(points: Point[], paddingX = 1, paddingY = paddingX): Ellipse {
   const box = bounds(points);
@@ -102,6 +119,41 @@ function paddedLoop(points: Point[], scale = 1.35): Point[] {
 
 function faceBox(landmarks: Landmark[], width: number, height: number) {
   return bounds(FACE_OVAL.map(index => toPoint(landmarks, index, width, height)));
+}
+
+function eyeCurves(opening: Point[]): Pick<Eye, 'x0' | 'x1' | 'top' | 'bot'> {
+  const xs = opening.map(([x]) => x);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  if (x0 >= x1) throw new Error('Detected eye opening must have positive width.');
+  const top: number[] = [], bot: number[] = [];
+  for (let i = 0; i < EYE_CURVE_SAMPLES; i++) {
+    const x = x0 + (x1 - x0) * Math.min(Math.max(i / (EYE_CURVE_SAMPLES - 1), 0.002), 0.998);
+    const crossings: number[] = [];
+    for (let j = 0; j < opening.length; j++) {
+      const [ax, ay] = opening[j], [bx, by] = opening[(j + 1) % opening.length];
+      if ((ax - x) * (bx - x) <= 0 && ax !== bx) crossings.push(ay + (by - ay) * (x - ax) / (bx - ax));
+    }
+    if (crossings.length < 2) throw new Error('Detected eye opening does not span every sampled column.');
+    top.push(Math.round(Math.min(...crossings) * 100) / 100);
+    bot.push(Math.round(Math.max(...crossings) * 100) / 100);
+  }
+  for (const index of [0, EYE_CURVE_SAMPLES - 1]) {
+    top[index] = bot[index] = Math.round((top[index] + bot[index]) / 2 * 100) / 100;
+  }
+  return { x0, x1, top, bot };
+}
+
+export function completeAutoRigDraft(draft: AutoRigDraft, current?: Rig): Rig {
+  const eyes: Eye[] = draft.eyes.map(eye => ({ ...eye, ...eyeCurves(eye.opening) }));
+  return {
+    ...draft,
+    eyes,
+    buns: current?.buns,
+    strands: current?.strands,
+    accessories: current?.accessories,
+    hand: current?.hand,
+    guides: current?.guides,
+  };
 }
 
 export function buildPoseSkeleton(
@@ -203,13 +255,23 @@ async function inferPoseFromCanvas(
   const files = await FilesetResolver.forVisionTasks('/mediapipe');
   let landmarker: PoseLandmarker | undefined;
   try {
-    landmarker = await PoseLandmarker.createFromOptions(files, {
-      baseOptions: { modelAssetPath: '/mediapipe/pose_landmarker_lite.task', delegate: 'CPU' },
+    const options = {
       runningMode: 'IMAGE',
       numPoses: 1,
       minPoseDetectionConfidence: 0.3,
       minPosePresenceConfidence: 0.3,
-    });
+    } as const;
+    try {
+      landmarker = await PoseLandmarker.createFromOptions(files, {
+        ...options,
+        baseOptions: { modelAssetPath: '/mediapipe/pose_landmarker_lite.task', delegate: 'GPU' },
+      });
+    } catch {
+      landmarker = await PoseLandmarker.createFromOptions(files, {
+        ...options,
+        baseOptions: { modelAssetPath: '/mediapipe/pose_landmarker_lite.task', delegate: 'CPU' },
+      });
+    }
     const result = landmarker.detect(image);
     return result.landmarks[0]
       ? buildPoseSkeleton(result.landmarks[0], width, height)
@@ -224,7 +286,7 @@ export async function detectBodyPose(sourceUrl: string): Promise<Skeleton | unde
   if (!response.ok) throw new Error(`Could not load the source image for pose detection (HTTP ${response.status}).`);
   const bitmap = await createImageBitmap(await response.blob());
   try {
-    const inferenceScale = Math.min(4, 2048 / Math.max(bitmap.width, bitmap.height));
+    const inferenceScale = Math.min(1, MAX_INFERENCE_DIMENSION / Math.max(bitmap.width, bitmap.height));
     const image = document.createElement('canvas');
     image.width = Math.max(1, Math.round(bitmap.width * inferenceScale));
     image.height = Math.max(1, Math.round(bitmap.height * inferenceScale));
@@ -494,24 +556,40 @@ export function buildAnimeAutoRigDraft(
 export async function autoRigImage(
   sourceUrl: string,
   faceIndex = 0,
+  onProgress?: (stage: AutoRigStage) => void,
+  guide?: Pick<Rig, 'head'>,
 ): Promise<AutoRigResult> {
   const response = await fetch(sourceUrl);
   if (!response.ok) throw new Error(`Could not load the source image (HTTP ${response.status}).`);
   const bitmap = await createImageBitmap(await response.blob());
+  onProgress?.('loadingModel');
   const files = await FilesetResolver.forVisionTasks('/mediapipe');
-  const landmarker = await FaceLandmarker.createFromOptions(files, {
-    baseOptions: { modelAssetPath: '/mediapipe/face_landmarker.task', delegate: 'CPU' },
+  const options = {
     runningMode: 'IMAGE',
-    numFaces: 8,
-  });
+    numFaces: guide ? 5 : 1,
+  } as const;
+  let landmarker: FaceLandmarker;
   try {
-    const inferenceScale = Math.min(4, 2048 / Math.max(bitmap.width, bitmap.height));
+    landmarker = await FaceLandmarker.createFromOptions(files, {
+      ...options,
+      baseOptions: { modelAssetPath: '/mediapipe/face_landmarker.task', delegate: 'GPU' },
+    });
+  } catch {
+    landmarker = await FaceLandmarker.createFromOptions(files, {
+      ...options,
+      baseOptions: { modelAssetPath: '/mediapipe/face_landmarker.task', delegate: 'CPU' },
+    });
+  }
+  try {
+    const inferenceScale = Math.min(1, MAX_INFERENCE_DIMENSION / Math.max(bitmap.width, bitmap.height));
     const inferenceImage = document.createElement('canvas');
     inferenceImage.width = Math.max(1, Math.round(bitmap.width * inferenceScale));
     inferenceImage.height = Math.max(1, Math.round(bitmap.height * inferenceScale));
     const context = inferenceImage.getContext('2d');
     if (!context) throw new Error('Could not prepare the source image for face inference.');
     context.drawImage(bitmap, 0, 0, inferenceImage.width, inferenceImage.height);
+    onProgress?.('detectingFace');
+    if (onProgress) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     const result = landmarker.detect(inferenceImage);
     if (!result.faceLandmarks.length) {
       throw new Error('MediaPipe did not detect a face in this image.');
@@ -527,6 +605,7 @@ export async function autoRigImage(
         const areaB = (b.bounds.right - b.bounds.left) * (b.bounds.bottom - b.bounds.top);
         return areaB - areaA;
       });
+    if (guide) faceIndex = selectFaceForHeadGuide(faces.map(face => face.bounds), guide.head);
     if (!Number.isInteger(faceIndex) || faceIndex < 0 || faceIndex >= faces.length) {
       throw new Error(`face_index must be between 0 and ${faces.length - 1}.`);
     }
@@ -538,7 +617,10 @@ export async function autoRigImage(
       'Soft-body regions are estimated from the chest and should be reviewed or disabled if they do not match the artwork.',
       'The exported skeleton is pose-guide metadata; limb articulation is not yet implemented by the runtime.',
     ];
+    if (guide) warnings.push('The current rig head position was used to choose the closest detected face. The generated result is staged separately and will not replace your rig until you apply it.');
     let bodyPoseApplied = false;
+    onProgress?.('detectingPose');
+    if (onProgress) await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     try {
       const skeleton = await inferPoseFromCanvas(inferenceImage, bitmap.width, bitmap.height);
       if (skeleton) {
@@ -552,7 +634,7 @@ export async function autoRigImage(
     } catch (error) {
       warnings.push(`Body pose inference failed; torso dimensions remain face-derived estimates: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (faces.length > 1) {
+    if (faces.length > 1 && !guide) {
       warnings.push(`${faces.length} faces were detected. The selected face is the largest by default; face_index can select another detected face.`);
     }
     return {

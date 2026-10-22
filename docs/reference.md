@@ -12,6 +12,17 @@ The header shows the project name with buttons to copy its full path and open it
 file as `rig.json.bak`. The sample is read-only, and browser-picked folders use a JSON download.
 Local project access is available only through the development server on 127.0.0.1; a static
 build keeps the folder picker and download workflow. Images stay on this machine.
+In the development editor, choose **Load image** to open a PNG, JPEG or WebP on the canvas and
+create a project under `projects/`. The current rig is resized proportionally to fit the new
+image and is used as an editable guide; loading an image does not run auto-rigging. Choose
+**Request auto-rig** separately. For writable local projects this uses the THEA adapter on
+`127.0.0.1:8766`, which tries the CPU anime-face detector before its MediaPipe fallback; the
+adapter must share the Studio project's files. Browser-picked folders and the read-only sample use
+the browser's MediaPipe flow instead. The current head position guides face selection when
+multiple faces are detected. The result is staged as a suggestion and does not change the saved
+rig or generated layers; only **Apply suggestion** changes the editor rig. Discard it or use Undo
+to recover the previous rig. Images are limited to 50 MiB and 40 megapixels. Image upload and
+project creation do not require the adapter.
 **Recent** keeps up to ten opened projects in this browser and can reopen the last project
 on start. Remove individual entries, clear the history, or disable automatic reopening in
 the project menu. Supported browsers retain a directory handle for picked folders and may
@@ -74,10 +85,48 @@ may need manual retouching. Inpainting approximates the artwork hidden behind ha
 ## Editing
 
 - Drag a handle or select an item to edit its numeric fields.
+- Select a specific rig item on the canvas and use **Transform selected cluster** to move,
+  uniformly resize or rotate only that item. Selecting a broad part category in the left list
+  does not transform every item in that category. These edits are undoable and remain in
+  source-image coordinates; they do not rotate or rescale the source image itself.
+- Select an individual ellipse or rig item on the canvas to work only on that item. Ellipses
+  expose a round rotation handle and a square proportional-resize handle in addition to their
+  centre and axis-radius handles. The small floating toolbar duplicates or deletes the selected
+  item where those operations are supported. Click the otherwise-dimmed **Hair buns** row to
+  draw a missing left or right bun; the same item toolbar can duplicate it to the other side.
+- Drawn accessories use filename-safe names (`a-z`, `0-9`, `_`, `-`) and automatically receive a
+  unique suffix. Delete an invalid selected accessory from the floating toolbar to unblock a
+  rebuild of a legacy project.
 - Select **Hair & accessories → Hair strands** even when no strands are in the rig, then choose
   **Draw hair strand** and drag from the root toward the tip. Select **Body** to draw shoulder
-  influence or soft-body bounce ellipses. The preview follows the pointer; press **Escape** to
-  cancel, and use **Undo** / **Redo** to revert or restore a completed stroke.
+  influence ellipses, **Soft-body** to add movement-driven bounce regions, or **Hair & accessories
+  → Accessories** to draw a real accessory rig entry. The preview follows the pointer; press
+  **Escape** to cancel, and use **Undo** / **Redo** to revert or restore a completed stroke.
+- **Request auto-rig** stages an editable suggestion without modifying the current rig or generated
+  image layers. Writable local projects use the THEA adapter on port 8766; it prefers anime-face
+  detection on CPU and falls back to MediaPipe. Other loaded sources use browser MediaPipe. The
+  current head location guides face selection, and existing optional rig entries are retained when
+  **Apply suggestion** is pressed. Review the result and rebuild after applying edits; auto-rig does
+  not create limb animation, hair strands, hand masks or accessory masks. SAM is not required for
+  this face-and-pose workflow; it provides image segmentation/masks, which may be added later as an
+  optional service rather than a Windows or CUDA prerequisite.
+- A dimmed part means that a runtime rig entry is absent. Clicking that row selects it but does
+  not create a rig. **Manual guides** are a separate annotation tool: lines and ellipses saved there
+  do not add cut-out layers, influence pixels, create joints or animate a limb.
+- The **Unsaved rig changes** status means the current `rig.json` has edits. The separate
+  rebuild warning appears only when edits affect generated image layers. Accessory boxes and masks
+  require **Save and rebuild layers**; soft-body regions deform the base mesh and need no cut-out
+  layer rebuild.
+- After drawing a soft-body region, select **Soft-body** to open **Soft-body motion settings** and
+  adjust gain, maximum offset, frequency and damping. The preview's **Trigger soft-body bounce**
+  action starts a measurable two-second test; its **Bounce strength** slider controls the input
+  impulse, and the output reports peak simulated displacement in px. Idle motion is enabled by
+  default in the pose preview and can be paused independently.
+- Soft-body is currently a movement-driven, damped 2D spring: transformed chest acceleration
+  drives an influence ellipse and the preview trigger adds a vertical impulse. It has no gravity,
+  tissue-volume, collision or anatomical model. Runtime instances expose pose, motion and bounce
+  controls for orchestration, but multi-panel staging and audio-timestamp synchronization still
+  need an application-level shared timeline; they are not built into the editor yet.
 - Ellipses are smooth influence regions, not cut-out masks: size them around the visible pixels
   that should move. Drawing a strand or ellipse does not add articulated arm or leg joints;
   skeleton lines remain pose-guide metadata rather than limb animation.
