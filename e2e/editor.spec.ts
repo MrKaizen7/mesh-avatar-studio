@@ -41,7 +41,7 @@ test('applies translation, scale and rotation to the selected rig cluster', asyn
   test.skip(!samplePresent, sampleSkipReason);
   await page.goto('/');
   await dismissGuide(page);
-  await expect(page.getByText('Engine ready', { exact: true })).toBeVisible();
+  await expect(page.getByText('Engine ready', { exact: true })).toBeVisible({ timeout: 30_000 });
   await page.getByTestId('part-head').click();
   await page.getByRole('spinbutton', { name: 'Move X (px)', exact: true }).fill('12');
   await page.getByRole('spinbutton', { name: 'Move Y (px)', exact: true }).fill('-8');
@@ -148,25 +148,39 @@ test('a missing part does not offer a guide-only rig action', async ({ page }) =
   await expect(page.getByLabel('Part name', { exact: true })).toHaveCount(0);
 });
 
-test('loads an image without auto-rigging and stages an adapter suggestion until explicitly applied', async ({ page }) => {
+test('loads an image without auto-rigging, then applies the adapter rig immediately', async ({ page }) => {
   test.skip(!samplePresent, sampleSkipReason);
   test.setTimeout(180_000);
   const projectName = `auto-rig-upload-e2e-${Date.now()}`;
   const source = await readFile(new URL('../samples/miko-qipao/source.png', import.meta.url));
-  const suggestion = structuredClone(fixture);
-  suggestion.head.cx += 25;
-  suggestion.eyes[0].opening[0][0] += 1;
+  const generatedRig = structuredClone(fixture);
+  generatedRig.head.cx += 25;
+  generatedRig.eyes[0].opening[0][0] += 1;
   let requestedHeadGuide: unknown;
+  let autoRigRequested = false;
   await page.route('**/__studio/projects/**/auto-rig', async route => {
+    autoRigRequested = true;
     requestedHeadGuide = route.request().postDataJSON().head_guide;
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
-        rig: suggestion,
+        rig: generatedRig,
         warnings: ['Review the detected landmarks.'],
       }),
     });
+  });
+  await page.route('**/__studio/projects/**/rebuild', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ path: `projects/${projectName}`, log: '' }),
+  }));
+  await page.route('**/__studio/projects/**/rig.json*', async route => {
+    if (autoRigRequested) {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(generatedRig) });
+    } else {
+      await route.continue();
+    }
   });
   await page.goto('/');
   try {
@@ -178,14 +192,14 @@ test('loads an image without auto-rigging and stages an adapter suggestion until
     await page.getByLabel('Load image', { exact: true }).setInputFiles({
       name: `${projectName}.png`, mimeType: 'image/png', buffer: source,
     });
-    await expect(page.getByText('Auto-rig suggestion ready. Your current rig is unchanged.', { exact: true })).toHaveCount(0);
-    await expect(page.getByTestId('project-location').locator('strong')).toHaveText(projectName);
-    await expect(page.getByTestId('preview-status')).toHaveAttribute('data-state', 'ready');
+    await expect(page.getByText('Auto-rig applied. Undo restores the previous rig.', { exact: true })).toHaveCount(0);
+    await expect(page.getByTestId('project-location').locator('strong')).toHaveText(projectName, { timeout: 30_000 });
+    await expect(page.getByText('Image loaded — no layers created', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('preview-status')).toHaveCount(0);
     await page.getByTestId('part-head').click();
     const headX = page.getByRole('spinbutton', { name: 'head.cx', exact: true });
-    const originalHeadX = await headX.inputValue();
-    await page.getByRole('button', { name: 'Request auto-rig', exact: true }).click();
-    await expect(page.getByText('Auto-rig suggestion ready. Your current rig is unchanged.', { exact: true }))
+    await page.getByRole('button', { name: 'Auto-rig image', exact: true }).click();
+    await expect(page.getByText('Auto-rig applied. Undo restores the previous rig.', { exact: true }))
       .toBeVisible({ timeout: 30_000 });
     expect(requestedHeadGuide).toEqual({
       cx: fixture.head.cx,
@@ -193,13 +207,10 @@ test('loads an image without auto-rigging and stages an adapter suggestion until
       rx: fixture.head.rx,
       ry: fixture.head.ry,
     });
-    await expect(headX).toHaveValue(originalHeadX);
+    await expect(headX).toHaveValue(String(generatedRig.head.cx));
     await expect(page.getByTestId('stale-banner')).toHaveCount(0);
     await expect(page.getByText('Review the detected landmarks.', { exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Apply suggestion', exact: true }).click();
-    await expect(headX).toHaveValue(String(suggestion.head.cx));
-    await expect(page.getByTestId('stale-banner')).toBeVisible();
-    await expect(page.getByText('Auto-rig suggestion applied. Undo restores the previous rig.', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Apply suggestion|Discard suggestion/ })).toHaveCount(0);
   } finally {
     await rm(resolve('projects', projectName), { recursive: true, force: true });
   }

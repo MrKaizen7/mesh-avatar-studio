@@ -107,7 +107,7 @@ test('validates before writing and keeps exactly the preceding rig in a one-gene
   expect((await call('/__studio/projects/sample-miko-qipao/rig', 'POST', first)).status).toBe(403);
 });
 
-test('creates a sanitized project from an uploaded PNG without requesting auto-rig', async () => {
+test('loads an uploaded PNG into an image-only project without building layers or requesting auto-rig', async () => {
   const image = Buffer.alloc(24);
   Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(image);
   image.writeUInt32BE(fixture.image.width, 16);
@@ -124,12 +124,12 @@ test('creates a sanitized project from an uploaded PNG without requesting auto-r
   const project = JSON.parse(result.body);
   expect(project.name).toBe('Rin-portrait');
   expect(project.relativePath).toBe(`projects/${project.name}`);
+  expect(project.hasLayers).toBe(false);
   expect(await readFile(resolve(root, project.relativePath, 'source.png'))).toEqual(image);
   expect(JSON.parse(await readFile(resolve(root, project.relativePath, 'rig.json'), 'utf8'))).toEqual(fixture);
-  expect(runner).toHaveBeenCalledTimes(1);
-  expect(runner.mock.calls[0][0]).toBe(root);
-  expect(runner.mock.calls[0][1]).toMatch(/projects[\\/]\.studio-job-/);
-  expect(runner.mock.calls[0][2]).toBe('build-layers');
+  expect(await readFile(resolve(root, project.relativePath, 'avatar.json'), 'utf8')).toContain('"name": "Rin-portrait"');
+  expect(await readFile(resolve(root, project.relativePath, 'built/layers.json')).catch(() => null)).toBeNull();
+  expect(runner).not.toHaveBeenCalled();
   expect(autoRigger).not.toHaveBeenCalled();
 
   const mismatched = structuredClone(fixture);
@@ -141,19 +141,19 @@ test('creates a sanitized project from an uploaded PNG without requesting auto-r
   expect(await readFile(resolve(root, 'projects/bad-project')).catch(() => null)).toBeNull();
 });
 
-test('stages an auto-rig suggestion with the current head guide and leaves project files unchanged', async () => {
+test('returns the auto-rig inference for immediate Studio application without modifying project files', async () => {
   const currentRig = await readFile(resolve(root, 'projects/nova/rig.json'), 'utf8');
   const originalBase = await readFile(resolve(root, 'projects/nova/built/base.png'));
-  const suggestion = structuredClone(fixture);
-  suggestion.head.cx += 25;
+  const generatedRig = structuredClone(fixture);
+  generatedRig.head.cx += 25;
   const autoRigger = vi.fn(async (
     _name: string,
     _headGuide?: { cx: number; cy: number; rx: number; ry: number },
-    _stageOnly?: boolean,
+    _inferenceOnly?: boolean,
   ) => ({
     status: 'ready_for_visual_review',
     warnings: ['Review the detected landmarks.'],
-    rig: suggestion,
+    rig: generatedRig,
   }));
   const response = await call('/__studio/projects/nova/auto-rig', 'POST', {
     head_guide: { cx: 620, cy: 420, rx: 100, ry: 130 },
@@ -161,7 +161,7 @@ test('stages an auto-rig suggestion with the current head guide and leaves proje
 
   expect(response.status).toBe(200);
   expect(JSON.parse(response.body)).toEqual({
-    rig: suggestion,
+    rig: generatedRig,
     warnings: ['Review the detected landmarks.'],
   });
   expect(autoRigger).toHaveBeenCalledExactlyOnceWith('nova', { cx: 620, cy: 420, rx: 100, ry: 130 }, true);
@@ -175,6 +175,19 @@ test('stages an auto-rig suggestion with the current head guide and leaves proje
     head_guide: { cx: 1, cy: 1, rx: 1, ry: 1 },
   }, {}, undefined, undefined, autoRigger)).status).toBe(403);
   expect(autoRigger).toHaveBeenCalledOnce();
+});
+
+test('persists the applied rig before rebuilding generated layers', async () => {
+  const appliedRig = structuredClone(fixture);
+  appliedRig.head.cx += 25;
+  const runner = vi.fn(async (_root: string, _project: string, _tool: Tool) => 'built');
+
+  const response = await call('/__studio/projects/nova/rebuild', 'POST', { rig: appliedRig }, {}, undefined, runner);
+
+  expect(response.status).toBe(200);
+  expect(runner).toHaveBeenCalledOnce();
+  expect(runner.mock.calls[0][2]).toBe('build-layers');
+  expect(JSON.parse(await readFile(resolve(root, 'projects/nova/rig.json'), 'utf8'))).toEqual(appliedRig);
 });
 
 test('refuses redirected rig writes and cross-origin operations, and reveals the validated folder', async () => {

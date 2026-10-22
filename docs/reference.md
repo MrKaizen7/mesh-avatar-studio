@@ -13,16 +13,19 @@ file as `rig.json.bak`. The sample is read-only, and browser-picked folders use 
 Local project access is available only through the development server on 127.0.0.1; a static
 build keeps the folder picker and download workflow. Images stay on this machine.
 In the development editor, choose **Load image** to open a PNG, JPEG or WebP on the canvas and
-create a project under `projects/`. The current rig is resized proportionally to fit the new
-image and is used as an editable guide; loading an image does not run auto-rigging. Choose
-**Request auto-rig** separately. For writable local projects this uses the THEA adapter on
+create an image-only project under `projects/` containing the source image and starting rig.
+Loading does not copy a sample, run auto-rigging, or create image layers. The current rig is resized
+proportionally to fit the new image and is used as an editable guide. Choose
+**Auto-rig image** separately. For writable local projects this uses the THEA adapter on
 `127.0.0.1:8766`, which tries the CPU anime-face detector before its MediaPipe fallback; the
 adapter must share the Studio project's files. Browser-picked folders and the read-only sample use
 the browser's MediaPipe flow instead. The current head position guides face selection when
-multiple faces are detected. The result is staged as a suggestion and does not change the saved
-rig or generated layers; only **Apply suggestion** changes the editor rig. Discard it or use Undo
-to recover the previous rig. Images are limited to 50 MiB and 40 megapixels. Image upload and
-project creation do not require the adapter.
+multiple faces are detected. Auto-rig applies its result to the editor immediately, saves it, and
+rebuilds layers for writable local projects. Parts changed since the image project was created
+(including individual eyes) are preserved; untouched parts use the generated rig. Use Undo to
+recover the previous rig. Projects without a recorded baseline are handled conservatively.
+Images are limited to 50 MiB and 40 megapixels. Image upload and project creation
+do not require the adapter or the layer builder.
 **Recent** keeps up to ten opened projects in this browser and can reopen the last project
 on start. Remove individual entries, clear the history, or disable automatic reopening in
 the project menu. Supported browsers retain a directory handle for picked folders and may
@@ -102,11 +105,11 @@ may need manual retouching. Inpainting approximates the artwork hidden behind ha
   influence ellipses, **Soft-body** to add movement-driven bounce regions, or **Hair & accessories
   → Accessories** to draw a real accessory rig entry. The preview follows the pointer; press
   **Escape** to cancel, and use **Undo** / **Redo** to revert or restore a completed stroke.
-- **Request auto-rig** stages an editable suggestion without modifying the current rig or generated
-  image layers. Writable local projects use the THEA adapter on port 8766; it prefers anime-face
+- **Auto-rig image** generates and applies a rig immediately while preserving components edited
+  since the image project was created. Writable local projects are saved and their layers rebuilt.
+  They use the THEA adapter on port 8766; it prefers anime-face
   detection on CPU and falls back to MediaPipe. Other loaded sources use browser MediaPipe. The
-  current head location guides face selection, and existing optional rig entries are retained when
-  **Apply suggestion** is pressed. Review the result and rebuild after applying edits; auto-rig does
+  current head location guides face selection, and Undo restores the previous rig. Auto-rig does
   not create limb animation, hair strands, hand masks or accessory masks. SAM is not required for
   this face-and-pose workflow; it provides image segmentation/masks, which may be added later as an
   optional service rather than a Windows or CUDA prerequisite.

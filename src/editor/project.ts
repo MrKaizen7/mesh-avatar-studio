@@ -16,6 +16,7 @@ export interface ProjectAssets {
   sourceUrl: string;
   assets: Record<string, string>;
   rig?: Rig;
+  baselineRig?: Rig;
   urls: string[];
 }
 export async function openProjectFolder(files: File[]): Promise<ProjectAssets> {
@@ -77,7 +78,6 @@ export async function copySample(rig: Rig): Promise<LocalProject> {
 export async function createImageProject(image: Blob, name: string, rig: Rig): Promise<{
   project: LocalProject;
   warnings: string[];
-  layerBuildError?: string;
 }> {
   if (image.type !== 'image/png' || image.size > 50 * 1024 * 1024) {
     throw new Error('Choose a PNG image no larger than 50 MiB.');
@@ -99,7 +99,7 @@ export async function createImageProject(image: Blob, name: string, rig: Rig): P
 export async function requestAutoRig(
   project: LocalProject,
   head: Rig['head'],
-): Promise<{ rig: AutoRigDraft; warnings: string[] }> {
+): Promise<{ rig: AutoRigDraft; warnings: string[]; detectorUsed?: string }> {
   const response = await fetch(`${baseUrl(project)}auto-rig`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -107,7 +107,7 @@ export async function requestAutoRig(
       head_guide: { cx: head.cx, cy: head.cy, rx: head.rx, ry: head.ry },
     }),
   });
-  let result: { rig?: AutoRigDraft; warnings?: unknown; error?: unknown };
+  let result: { rig?: AutoRigDraft; warnings?: unknown; error?: unknown; detector_used?: unknown };
   try {
     result = await response.json();
   } catch (error) {
@@ -117,11 +117,12 @@ export async function requestAutoRig(
     throw new Error(typeof result.error === 'string' ? result.error : `Auto-rig request failed (HTTP ${response.status}).`);
   }
   if (!result.rig || typeof result.rig !== 'object' || Array.isArray(result.rig)) {
-    throw new Error('Auto-rig service did not return a rig suggestion.');
+    throw new Error('Auto-rig service did not return a rig.');
   }
   return {
     rig: result.rig,
     warnings: Array.isArray(result.warnings) ? result.warnings.filter((warning): warning is string => typeof warning === 'string') : [],
+    ...(typeof result.detector_used === 'string' ? { detectorUsed: result.detector_used } : {}),
   };
 }
 export async function imageAsPng(file: File): Promise<Blob> {
@@ -214,6 +215,25 @@ async function jsonFile(url: string) {
 }
 export async function openLocalProject(project: LocalProject): Promise<ProjectAssets> {
   const base = baseUrl(project), version = Date.now();
+  if (project.hasLayers === false) {
+    const [rawRig, sourceResponse] = await Promise.all([
+      jsonFile(`${base}${project.rigFile ?? 'rig.json'}?v=${version}`),
+      fetch(`${base}source.png?v=${version}`),
+    ]);
+    if (!sourceResponse.ok) throw new Error(`Project source image could not load (HTTP ${sourceResponse.status}).`);
+    const rig = parseRig(rawRig);
+    let baselineRig: Rig | undefined;
+    const baselineResponse = await fetch(`${base}rig.baseline.json?v=${version}`);
+    if (baselineResponse.ok) baselineRig = parseRig(await baselineResponse.json());
+    else if (baselineResponse.status !== 404) throw new Error(`Project rig baseline could not load (HTTP ${baselineResponse.status}).`);
+    return {
+      sourceUrl: `${base}source.png?v=${version}`,
+      assets: {},
+      rig,
+      baselineRig,
+      urls: [],
+    };
+  }
   const { rig, assets } = await openAvatar(base, { version, rigFile: project.rigFile });
   const sourceUrl = project.hasSource === false ? '' : `${base}source.png?v=${version}`;
   // Check images before replacing the editor's current project.

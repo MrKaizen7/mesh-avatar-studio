@@ -23,7 +23,7 @@ import { JobFeedback } from './JobFeedback';
 import { CopyButton } from './CopyButton';
 import { readRecent, addRecent, saveRecent, REOPEN_KEY, pickDirectory, hasDirectoryPicker, directoryFiles,
   keepDirectory, restoreDirectory, forgetDirectory, clearDirectories, type RecentProject, type ProjectDirectory } from './recent-projects';
-import { autoRigImage, completeAutoRigDraft, type AutoRigDraft, type AutoRigStage } from './auto-rig';
+import { autoRigImage, mergeAutoRigDraft, type AutoRigDraft, type AutoRigStage } from './auto-rig';
 import './style.css';
 import { liveText } from '../live/i18n';
 
@@ -54,6 +54,7 @@ function Workspace() {
   const [assets, setAssets] = useState<Record<string, string> | undefined>(undefined);
   const [projects, setProjects] = useState<LocalProjectEntry[] | null>(null);
   const [localProject, setLocalProject] = useState<LocalProject | null>(null);
+  const [rigBaseline, setRigBaseline] = useState<Rig | null>(null);
   const [pickedName, setPickedName] = useState('');
   const [notice, setNotice] = useState<{ key: 'savedTo' | 'missingRecent' | 'variantsReloaded' | 'reloadFailed'; path?: string } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -63,7 +64,6 @@ function Workspace() {
   const [mouthSprites, setMouthSprites] = useState(true), [mouthRequest, setMouthRequest] = useState(0);
   const [job, setJob] = useState<ProjectJob | null>(null);
   const [autoRigBusy, setAutoRigBusy] = useState(false);
-  const [autoRigDraft, setAutoRigDraft] = useState<AutoRigDraft | null>(null);
   const [autoRigStage, setAutoRigStage] = useState<AutoRigStage | 'creatingProject' | 'requestingAutoRig'>('loadingModel');
   const [autoRigError, setAutoRigError] = useState<string | null>(null);
   const [imageProjectError, setImageProjectError] = useState<string | null>(null);
@@ -179,9 +179,8 @@ function Workspace() {
     setAutoRigError(null);
     setImageProjectError(null);
     setAutoRigWarnings(null);
-    setAutoRigDraft(null);
     try {
-      let result: { rig: AutoRigDraft; warnings: string[] };
+      let result: { rig: AutoRigDraft; warnings: string[]; detectorUsed?: string };
       if (localProject && !localProject.readOnly) {
         setAutoRigStage('requestingAutoRig');
         result = await requestAutoRig(localProject, rig.head);
@@ -191,11 +190,26 @@ function Workspace() {
       if (result.rig.image.width !== rig.image.width || result.rig.image.height !== rig.image.height) {
         throw new Error('The source image dimensions do not match the loaded rig.');
       }
-      const next = completeAutoRigDraft(result.rig, rig);
+      const next = mergeAutoRigDraft(result.rig, rig, rigBaseline ?? undefined);
       const errors = validateRig(next);
       if (errors.length) throw new Error(`Generated rig is invalid:\n${errors.join('\n')}`);
-      setAutoRigDraft(result.rig);
-      setAutoRigWarnings(result.warnings);
+      update(next);
+      setVisible([...GROUPS]);
+      setSelected('head');
+      setAutoRigWarnings([
+        ...(result.detectorUsed ? [`Face detector: ${result.detectorUsed}.`] : []),
+        ...result.warnings,
+      ]);
+      if (localProject && !localProject.readOnly) {
+        setRebuildError(null);
+        try {
+          await runJob('rebuild');
+        } catch (failure) {
+          setRebuildError(failure instanceof ProjectJobError
+            ? failure
+            : new ProjectJobError('toolFailed', failure instanceof Error ? failure.message : String(failure)));
+        }
+      }
     } catch (failure) {
       setAutoRigError(failure instanceof Error ? failure.message : String(failure));
     } finally {
@@ -206,40 +220,26 @@ function Workspace() {
     if (!file || !rootPath || jobRef.current || saving || autoRigBusy) return;
     setAutoRigBusy(true);
     setAutoRigError(null);
+    setImageProjectError(null);
     setAutoRigWarnings(null);
     try {
       const png = await imageAsPng(file);
       const bitmap = await createImageBitmap(png);
       let imageRig: Rig;
-      try { imageRig = resizeRigToImage(rig, bitmap.width, bitmap.height); }
+      try { imageRig = resizeRigToImage(parseRig(fixture), bitmap.width, bitmap.height); }
       finally { bitmap.close(); }
       const name = file.name.replace(/\.[^.]+$/, '');
       setAutoRigStage('creatingProject');
       const result = await createImageProject(png, name, imageRig);
-      if (!await openLocal(result.project)) throw new Error('The new image project could not be opened.');
+      if (!await openLocal(result.project)) return;
       setProjects(await localProjects());
       setSelected('head');
-      setAutoRigDraft(null);
       setAutoRigWarnings(null);
-      setImageProjectError(result.layerBuildError ?? null);
-      if (result.layerBuildError) setBuiltSignature('');
     } catch (failure) {
       setImageProjectError(failure instanceof Error ? failure.message : String(failure));
     } finally {
       setAutoRigBusy(false);
     }
-  };
-  const applyAutoRigSuggestion = () => {
-    if (!autoRigDraft) return;
-    const next = completeAutoRigDraft(autoRigDraft, rig);
-    const errors = validateRig(next);
-    if (errors.length) {
-      setAutoRigError(`Generated rig is invalid:\n${errors.join('\n')}`);
-      return;
-    }
-    update(next);
-    setSelected('head');
-    setAutoRigDraft(null);
   };
   const openFile = async (file?: File) => {
     if (!file || jobRef.current || localProject?.hasSource === false) return;
@@ -273,6 +273,8 @@ function Workspace() {
       setChecking(false);
       setError(null);
       setRebuildError(null);
+      setAutoRigError(null);
+      setImageProjectError(null);
       const name = handle?.name || files[0]?.webkitRelativePath.split('/')[0] || t.openProject;
       let id = `folder:${name}`;
       if (handle) {
@@ -299,6 +301,8 @@ function Workspace() {
       projectOpened.current = true;
       history.load(project.rig!); setRig(history.present); setDragStale(null); setBuiltSignature(layerSignature(project.rig!));
       setDrawTool(null);
+      setVisible(entry.hasLayers === false ? [] : [...GROUPS]);
+      setRigBaseline(project.baselineRig ?? null);
       setSavedRig(JSON.stringify(project.rig)); pickedFiles.current = undefined;
       setSelected(null); setLocalProject(entry); setPickedName('');
       objectUrls.current.forEach(url => URL.revokeObjectURL(url)); objectUrls.current = [];
@@ -309,9 +313,11 @@ function Workspace() {
         relativePath: entry.relativePath, lastOpened: new Date().toISOString() });
       if (openMenu.current) openMenu.current.open = false;
       return true;
-    } catch {
+    } catch (failure) {
       if (automatic) { removeRecent(`server:${entry.name}`); setNotice({ key: 'missingRecent', path: entry.name }); }
-      else setError({ kind: 'invalidFolder', paths: [] });
+      else if (entry.hasLayers === false) {
+        setImageProjectError(failure instanceof Error ? failure.message : String(failure));
+      } else setError({ kind: 'invalidFolder', paths: [] });
       return false;
     }
     finally { setOpening(false); }
@@ -601,19 +607,10 @@ function Workspace() {
     {autoRigError && <p className="error auto-rig-feedback" role="alert">{t.autoRigError}: {autoRigError}</p>}
     {imageProjectError && <div className="error auto-rig-feedback" role="alert">
       <p>{t.imageProjectError}: {imageProjectError}</p>
-      {localProject && !localProject.readOnly && <button disabled={busy || saving} onClick={() => {
-        void runJob('rebuild')
-          .then(() => setImageProjectError(null))
-          .catch(error => setImageProjectError(error instanceof Error ? error.message : String(error)));
-      }}>{t.retryLayerBuild}</button>}
     </div>}
     {autoRigWarnings && <div className="auto-rig-feedback" role="status">
-      <strong>{autoRigDraft ? t.autoRigSuggestionReady : t.autoRigApplied}</strong>
+      <strong>{t.autoRigApplied}</strong>
       <ul>{autoRigWarnings.map((warning, index) => <li key={`${index}-${warning}`}>{warning}</li>)}</ul>
-      {autoRigDraft && <div className="auto-rig-actions">
-        <button className="primary" onClick={applyAutoRigSuggestion}>{t.applyAutoRig}</button>
-        <button onClick={() => { setAutoRigDraft(null); setAutoRigWarnings(null); }}>{t.discardAutoRig}</button>
-      </div>}
     </div>}
     {notice && <div role="status" className="save-notice">{t[notice.key]}{notice.path && ` ${notice.path}`}</div>}
     {archiveFeedback && <div className={`archive-feedback${archiveFeedback.error ? ' error' : ''}`} role={archiveFeedback.error ? 'alert' : 'status'}>
@@ -653,8 +650,12 @@ function Workspace() {
         </div>
       </section>}
       <div className="right-column">
-        <Preview key={localProject?.name ?? (pickedName || 'sample-miko-qipao')} projectKey={localProject?.name ?? (pickedName || 'sample-miko-qipao')} rig={rig} assets={assets} hasMouthSprites={mouthSprites} onDrawMouth={playbackOnly ? undefined : () => setMouthRequest(value => value + 1)} />
-        {!playbackOnly && <VariantsPanel project={localProject} projectPath={localProject?.relativePath ?? (pickedName ? `<${pickedName}>` : 'samples/miko-qipao')} assets={assets} rootPath={rootPath} busy={busy || saving} stale={changed.length > 0} onRun={runJob} mouthRequest={mouthRequest} onMouthPresence={setMouthSprites} />}
+        {localProject?.hasLayers === false
+          ? <section className="panel image-only-project" role="status"><h2>{t.imageOnlyTitle}</h2><p>{t.imageOnlyHelp}</p></section>
+          : <>
+            <Preview key={localProject?.name ?? (pickedName || 'sample-miko-qipao')} projectKey={localProject?.name ?? (pickedName || 'sample-miko-qipao')} rig={rig} assets={assets} hasMouthSprites={mouthSprites} onDrawMouth={playbackOnly ? undefined : () => setMouthRequest(value => value + 1)} />
+            {!playbackOnly && <VariantsPanel project={localProject} projectPath={localProject?.relativePath ?? (pickedName ? `<${pickedName}>` : 'samples/miko-qipao')} assets={assets} rootPath={rootPath} busy={busy || saving} stale={changed.length > 0} onRun={runJob} mouthRequest={mouthRequest} onMouthPresence={setMouthSprites} />}
+          </>}
         {!localProject && !pickedName && <details className="panel new-illustration"><summary>{t.newIllustration}</summary><AskAgent newProject rootPath={rootPath} /></details>}
         {!playbackOnly && <aside className="panel inspector" inert={busy}>
           <div className="selection-heading"><h2>{selectedPart?.[0] ?? t.selection}</h2></div>

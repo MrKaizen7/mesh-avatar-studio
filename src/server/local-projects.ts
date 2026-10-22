@@ -46,6 +46,7 @@ export type AutoRigRunner = (projectName: string, headGuide?: AutoRigHeadGuide, 
   status: string;
   warnings?: string[];
   rig?: unknown;
+  detectorUsed?: string;
 }>;
 export function localProjectMiddleware(
   root: string,
@@ -76,7 +77,7 @@ export function localProjectMiddleware(
     }
     let response: Response;
     try {
-      response = await fetch(new URL('/api/auto-rig', adapter), {
+      response = await fetch(new URL(stageOnly ? '/api/auto-rig/suggestion' : '/api/auto-rig', adapter), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -89,7 +90,7 @@ export function localProjectMiddleware(
     } catch (error) {
       throw new HttpError(503, `THEA mesh-avatar adapter is unavailable at ${adapter.origin}: ${(error as Error).message}`);
     }
-    let result: { status?: unknown; warnings?: unknown; error?: unknown; rig?: unknown };
+    let result: { status?: unknown; warnings?: unknown; error?: unknown; rig?: unknown; detector_used?: unknown };
     try {
       result = await response.json();
     } catch (error) {
@@ -103,12 +104,13 @@ export function localProjectMiddleware(
       throw new HttpError(502, 'THEA mesh-avatar adapter did not finish the auto-rig review.');
     }
     if (stageOnly && (!result.rig || typeof result.rig !== 'object' || Array.isArray(result.rig))) {
-      throw new HttpError(502, 'THEA mesh-avatar adapter did not return a rig suggestion.');
+      throw new HttpError(502, 'THEA mesh-avatar adapter did not return a rig.');
     }
     return {
       status: result.status,
       warnings: Array.isArray(result.warnings) ? result.warnings.filter((warning): warning is string => typeof warning === 'string') : [],
       ...(result.rig ? { rig: result.rig } : {}),
+      ...(typeof result.detector_used === 'string' ? { detectorUsed: result.detector_used } : {}),
     };
   }
   async function createImageProject(body: unknown) {
@@ -162,40 +164,20 @@ export function localProjectMiddleware(
     }
     try {
       saving.add(path);
-      await cp(sample, path, {
-        recursive: true,
-        force: false,
-        filter: async source => {
-          if ((await lstat(source)).isSymbolicLink()) throw new HttpError(400, 'Sample contains redirected files.');
-          return true;
-        },
-      });
       await checked(base, path);
       await writeFile(resolve(path, 'source.png'), image);
       if (value.rig !== undefined) {
         await writeFile(resolve(path, 'rig.json'), `${JSON.stringify(value.rig, null, 2)}\n`);
+        await writeFile(resolve(path, 'rig.baseline.json'), `${JSON.stringify(value.rig, null, 2)}\n`);
       }
-      const manifestPath = resolve(path, 'avatar.json');
-      const manifest = await exists(manifestPath)
-        ? JSON.parse(await readFile(manifestPath, 'utf8'))
-        : { format: 'mesh-avatar', version: 1 };
-      manifest.name = name;
-      await writeFile(resolve(path, 'avatar.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-      let layerBuildError: string | undefined;
-      try {
-        await projectJob(root, path, 'build-layers', [], runner);
-      } catch (error) {
-        if (error instanceof JobError) {
-          layerBuildError = `${error.code}: ${error.log}`;
-        } else {
-          const failure = fileSystemError(root, error, relative(root, path));
-          if (!failure || !['EPERM', 'EACCES', 'EROFS', 'EBUSY'].includes(failure.body.code)) throw error;
-          layerBuildError = failure.body.error;
-        }
-      }
+      await writeFile(resolve(path, 'avatar.json'), `${JSON.stringify({
+        format: 'mesh-avatar',
+        version: 1,
+        name,
+      }, null, 2)}\n`);
       const project = await info(name);
       if (!project) throw new HttpError(500, 'Could not create the uploaded image project.');
-      return { ...project, project, warnings: [], layerBuildError };
+      return { ...project, project, warnings: [] };
     } catch (error) {
       if (created) {
         await checked(base, path);
@@ -334,6 +316,7 @@ export function localProjectMiddleware(
     return { name, relativePath: relative(root, path).split(sep).join('/'), absolutePath: path, displayPath: displayPath(path),
       rigFile: await exists(rigPath) ? 'rig.json' : 'rig.draft.json',
       updatedAt: (await stat(file)).mtime.toISOString(), hasSprites: await exists(resolve(path, 'built/sprites/sprites.json')),
+      hasLayers: await exists(resolve(path, 'built/layers.json')),
       hasVariants: await exists(resolve(path, 'variants')), hasSource: !!await sourceFile(path), readOnly: name === SAMPLE };
   }
   return async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
@@ -458,14 +441,15 @@ export function localProjectMiddleware(
           ry: head.ry,
         }, true);
         if (result.status !== 'ready_for_visual_review' || !result.rig || typeof result.rig !== 'object' || Array.isArray(result.rig)) {
-          throw new HttpError(502, 'Auto-rig did not return a valid suggestion.');
+          throw new HttpError(502, 'Auto-rig did not return a valid rig.');
         }
         if (Buffer.byteLength(JSON.stringify(result.rig), 'utf8') > 1024 * 1024) {
-          throw new HttpError(502, 'Auto-rig suggestion exceeds 1 MiB.');
+          throw new HttpError(502, 'Auto-rig result exceeds 1 MiB.');
         }
         json(200, {
           rig: result.rig,
           warnings: Array.isArray(result.warnings) ? result.warnings.filter((warning): warning is string => typeof warning === 'string') : [],
+          detector_used: result.detectorUsed,
         });
         return;
       }
@@ -496,7 +480,7 @@ export function localProjectMiddleware(
       }
       if (req.method !== 'GET') throw new HttpError(405, 'Method not allowed.');
       const fileName = tail.join('/');
-      if (!(['avatar.json', 'rig.json', 'rig.draft.json', 'source.png'].includes(fileName) || ['built', 'variants'].includes(tail[0]) || (tail.length === 3 && tail[0] === 'variant-requests' && VARIANTS.includes(tail[1] as typeof VARIANTS[number]) && tail[2] === 'mask.png'))) throw new HttpError(404, 'File not available.');
+      if (!(['avatar.json', 'rig.json', 'rig.draft.json', 'rig.baseline.json', 'source.png'].includes(fileName) || ['built', 'variants'].includes(tail[0]) || (tail.length === 3 && tail[0] === 'variant-requests' && VARIANTS.includes(tail[1] as typeof VARIANTS[number]) && tail[2] === 'mask.png'))) throw new HttpError(404, 'File not available.');
       const mime: Record<string, string> = { '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' };
       const contentType = mime[extname(fileName)];
       if (!contentType) throw new HttpError(404, 'File not available.');

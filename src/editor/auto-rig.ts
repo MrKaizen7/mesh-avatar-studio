@@ -156,6 +156,45 @@ export function completeAutoRigDraft(draft: AutoRigDraft, current?: Rig): Rig {
   };
 }
 
+export function mergeAutoRigDraft(draft: AutoRigDraft, current: Rig, baseline?: Rig): Rig {
+  const preserve = <T,>(path: string, generated: T, existing: T): T =>
+    !baseline || JSON.stringify(getPath(baseline, path)) !== JSON.stringify(existing) ? existing : generated;
+  const get = <T,>(path: string, generated: T, existing: T): T => preserve(path, generated, existing);
+  const merged = completeAutoRigDraft(draft, current);
+  merged.head = get('head', draft.head, current.head);
+  merged.body = {
+    ...draft.body,
+    pivotX: get('body.pivotX', draft.body.pivotX, current.body.pivotX),
+    pivotY: get('body.pivotY', draft.body.pivotY, current.body.pivotY),
+    maxRoll: get('body.maxRoll', draft.body.maxRoll, current.body.maxRoll),
+    breathBand: get('body.breathBand', draft.body.breathBand, current.body.breathBand),
+    rollBand: get('body.rollBand', draft.body.rollBand, current.body.rollBand),
+    chest: get('body.chest', draft.body.chest, current.body.chest),
+    shoulders: get('body.shoulders', draft.body.shoulders, current.body.shoulders),
+  };
+  const faceKeys = Object.keys(draft.face) as (keyof Rig['face'])[];
+  merged.face = Object.fromEntries(
+    faceKeys.map(key => [
+      key,
+      get(`face.${key}`, draft.face[key], current.face[key]),
+    ]),
+  ) as Rig['face'];
+  merged.eyes = draft.eyes.map((eye, index) => {
+    const generated = { ...eye, ...eyeCurves(eye.opening) };
+    return get(`eyes.${index}`, generated, current.eyes[index] ?? generated);
+  });
+  for (const key of ['mouth', 'cheeks', 'buns', 'strands', 'accessories', 'hand', 'skeleton', 'softBody', 'guides', 'mesh', 'view'] as const) {
+    Object.assign(merged, { [key]: get(key, draft[key], current[key]) });
+  }
+  return merged;
+}
+
+function getPath(value: unknown, path: string): unknown {
+  return path.split('.').reduce<unknown>((current, key) => (
+    current && typeof current === 'object' ? (current as Record<string, unknown>)[key] : undefined
+  ), value);
+}
+
 export function buildPoseSkeleton(
   landmarks: Landmark[],
   width: number,

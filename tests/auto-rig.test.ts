@@ -7,6 +7,7 @@ import {
   buildAutoRigDraft,
   buildPoseSkeleton,
   completeAutoRigDraft,
+  mergeAutoRigDraft,
   selectFaceForHeadGuide,
 } from '../src/editor/auto-rig';
 
@@ -108,6 +109,22 @@ describe('automatic face rigging', () => {
     expect(completed.strands).toBeUndefined();
     expect(completed.accessories).toBeUndefined();
     expect(completed.hand).toBeUndefined();
+  });
+
+  it('applies generated rig components while preserving manually edited components', () => {
+    const baseline = parseRig(fixture);
+    const current = structuredClone(baseline);
+    current.head.cx += 12;
+    current.eyes[0].opening[0][0] += 3;
+    const { rig: draft } = buildAnimeAutoRigDraft(current.image.width, current.image.height, animeDetection());
+
+    const merged = mergeAutoRigDraft(draft, current, baseline);
+
+    expect(merged.head).toEqual(current.head);
+    expect(merged.eyes[0]).toEqual(current.eyes[0]);
+    expect(merged.eyes[1].opening).toEqual(draft.eyes[1].opening);
+    expect(merged.face).toEqual(draft.face);
+    expect(validateRig(merged)).toEqual([]);
   });
 
   it('selects the detected face closest in position and size to the current head guide', () => {
